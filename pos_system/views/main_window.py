@@ -11,11 +11,10 @@ import config
 
 
 class MainWindow(tk.Tk):
-    """Ventana principal del POS con diseño minimalista y moderno."""
+    """Ventana principal del POS optimizada para cajeros, lectores y diseño minimalista."""
 
     REFRESH_MS = 750
 
-    # Paleta de colores minimalista
     BG_COLOR = "#F8F9FA"
     CARD_BG = "#FFFFFF"
     PRIMARY = "#1A1A1A"
@@ -44,15 +43,10 @@ class MainWindow(tk.Tk):
         self.after(self.REFRESH_MS, self._sincronizar_vistas)
 
     def _configurar_estilos(self):
-        """Configura estilos limpios y minimalistas para ttk widgets."""
         style = ttk.Style()
         style.theme_use("clam")
 
-        style.configure(
-            "TNotebook", 
-            background=self.BG_COLOR, 
-            borderwidth=0
-        )
+        style.configure("TNotebook", background=self.BG_COLOR, borderwidth=0)
         style.configure(
             "TNotebook.Tab", 
             background="#E9ECEF", 
@@ -147,35 +141,39 @@ class MainWindow(tk.Tk):
     def construir_pestana_caja(self, parent):
         tk.Label(
             parent,
-            text="Terminal de Cobro",
+            text="Terminal de Cobro (Optimizado para Lector de Barras)",
             font=("Segoe UI", 16, "bold"),
             bg=self.BG_COLOR,
             fg=self.PRIMARY
         ).pack(pady=16)
 
-        f_form = ttk.LabelFrame(parent, text=" Datos de Venta ", padding=20)
+        f_form = ttk.LabelFrame(parent, text=" Escaneo y Cobro ", padding=20)
         f_form.pack(padx=20, pady=10, fill="x")
 
-        ttk.Label(f_form, text="Código Artículo:").grid(row=0, column=0, sticky="w", pady=8)
-        e_cod = ttk.Entry(f_form, width=25)
+        ttk.Label(f_form, text="Código Artículo / Escáner:").grid(row=0, column=0, sticky="w", pady=8)
+        e_cod = ttk.Entry(f_form, width=30, font=("Segoe UI", 11))
         e_cod.grid(row=0, column=1, padx=12, pady=8)
         e_cod.focus()
 
         ttk.Label(f_form, text="Cantidad:").grid(row=1, column=0, sticky="w", pady=8)
-        e_cant = ttk.Entry(f_form, width=25)
+        e_cant = ttk.Entry(f_form, width=15, font=("Segoe UI", 11))
         e_cant.insert(0, "1")
-        e_cant.grid(row=1, column=1, padx=12, pady=8)
+        e_cant.grid(row=1, column=1, sticky="w", padx=12, pady=8)
 
-        def cobrar():
+        def cobrar(event=None):
             try:
                 codigo = e_cod.get().strip()
-                cantidad = int(e_cant.get())
-                if not codigo or cantidad <= 0:
-                    raise ValueError("Código y cantidad válida son obligatorios.")
+                cantidad_str = e_cant.get().strip()
+                if not codigo:
+                    return
+                cantidad = int(cantidad_str) if cantidad_str else 1
+                if cantidad <= 0:
+                    raise ValueError("La cantidad debe ser mayor a cero.")
 
                 art = InventarioRepository.obtener_por_codigo(codigo)
                 if not art:
-                    messagebox.showerror("Error", "Artículo no encontrado.")
+                    messagebox.showerror("Error", f"Artículo con código '{codigo}' no encontrado.")
+                    e_cod.delete(0, tk.END)
                     return
                 if cantidad > art.cantidad:
                     messagebox.showerror("Stock insuficiente", f"Stock disponible: {art.cantidad}")
@@ -199,6 +197,7 @@ class MainWindow(tk.Tk):
                         promo_txt = f"Descuento de {valor_p}% aplicado"
 
                 resultado = SalesService.procesar_venta([(codigo, cantidad_cobrar)])
+                
                 detalle_txt = (
                     f"🎫 TICKET DE VENTA #{resultado.venta_id}\n"
                     "----------------------------------------\n"
@@ -218,9 +217,11 @@ class MainWindow(tk.Tk):
             except Exception as exc:
                 messagebox.showerror("Error al procesar la venta", str(exc))
 
-        btn_cobrar = tk.Button(
+        e_cod.bind("<Return>", cobrar)
+
+        tk.Button(
             parent,
-            text="💳 Procesar Venta e Imprimir Ticket",
+            text="💳 Procesar Venta / Cobrar (Enter)",
             bg=self.SUCCESS,
             fg="white",
             relief="flat",
@@ -229,8 +230,7 @@ class MainWindow(tk.Tk):
             font=("Segoe UI", 10, "bold"),
             cursor="hand2",
             command=cobrar,
-        )
-        btn_cobrar.pack(pady=20)
+        ).pack(pady=20)
 
     def construir_pestana_inventario(self, parent):
         tk.Label(
@@ -327,7 +327,6 @@ class MainWindow(tk.Tk):
         )
         lbl_sel.pack(anchor="w", padx=16, pady=2)
 
-        # Contenedor inferior: Stock + Histograma lado a lado o en paneles limpios
         f_inferior = ttk.Frame(parent)
         f_inferior.pack(fill="x", padx=16, pady=4)
 
@@ -447,7 +446,7 @@ class MainWindow(tk.Tk):
                 val = int(e_cant_stock.get())
                 if val < 0:
                     raise ValueError("La cantidad no puede ser negativa.")
-                codigo = tree.item(sel[0], "values")[0]
+                codigo = str(tree.item(sel[0], "values")[0]).strip()
                 art = InventarioRepository.obtener_por_codigo(codigo)
                 if not art:
                     raise ValueError("El producto seleccionado ya no existe.")
@@ -549,10 +548,15 @@ class MainWindow(tk.Tk):
                 etiqueta = combo_eti_promo.get()
                 tipo = e_tipo.get()
                 valor = float(e_val.get())
-                InventarioRepository.guardar_promocion(nombre, tipo, valor, codigo, etiqueta)
+                
+                val_codigo = codigo if codigo else None
+                val_etiqueta = etiqueta if etiqueta and etiqueta != "Ninguna" else None
+
+                InventarioRepository.guardar_promocion(nombre, tipo, valor, val_codigo, val_etiqueta)
                 messagebox.showinfo("Éxito", "Promoción creada correctamente.")
                 e_nom_promo.delete(0, tk.END)
                 e_cod_art.delete(0, tk.END)
+                combo_eti_promo.set("Ninguna")
                 cargar_promos()
             except (ValueError, TypeError) as exc:
                 messagebox.showerror("Error", str(exc))
@@ -575,10 +579,10 @@ class MainWindow(tk.Tk):
             if not sel:
                 messagebox.showwarning("Aviso", "Seleccione una promoción para eliminar.")
                 return
-            promo_id = tree_promo.item(sel[0], "values")[0]
+            promo_id = int(tree_promo.item(sel[0], "values")[0])
             if messagebox.askyesno("Confirmar", "¿Eliminar esta promoción?"):
                 try:
-                    InventarioRepository.eliminar_promocion(int(promo_id))
+                    InventarioRepository.eliminar_promocion(promo_id)
                     cargar_promos()
                 except Exception as exc:
                     messagebox.showerror("Error", str(exc))

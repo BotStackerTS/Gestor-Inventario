@@ -54,7 +54,7 @@ class InventarioRepository:
                 FROM inventario
                 WHERE codigo = ?
                 """,
-                (codigo,),
+                (str(codigo).strip(),),
             ).fetchone()
             return InventarioRepository._articulo(row) if row else None
 
@@ -121,7 +121,7 @@ class InventarioRepository:
             )
 
         columnas = ", ".join(f"{campo} = ?" for campo in campos)
-        valores = list(campos.values()) + [codigo]
+        valores = list(campos.values()) + [str(codigo).strip()]
 
         with DatabaseConnection.conectar() as conn:
             cursor = conn.execute(
@@ -134,7 +134,7 @@ class InventarioRepository:
     def eliminar(codigo: str) -> None:
         with DatabaseConnection.conectar() as conn:
             cursor = conn.execute(
-                "DELETE FROM inventario WHERE codigo = ?", (codigo,)
+                "DELETE FROM inventario WHERE codigo = ?", (str(codigo).strip(),)
             )
             if cursor.rowcount == 0:
                 raise ValueError(f"No existe el artículo con código '{codigo}'.")
@@ -162,12 +162,13 @@ class InventarioRepository:
             raise ValueError("Tipo de promoción no válido.")
         if tipo == "PORCENTAJE" and not 0 <= float(valor) <= 100:
             raise ValueError("El descuento debe estar entre 0 y 100%.")
+        
         if codigo_articulo and etiqueta_nombre:
             raise ValueError(
-                "Una promoción debe aplicarse a un producto o a una etiqueta, no a ambos."
+                "Una promoción debe aplicarse a un producto o a una etiqueta, pero no a ambos a la vez."
             )
         if not codigo_articulo and not etiqueta_nombre:
-            raise ValueError("Debe indicar un producto o una etiqueta.")
+            raise ValueError("Debe indicar obligatoriamente un producto o una etiqueta.")
 
         with DatabaseConnection.conectar() as conn:
             etiqueta_id = None
@@ -231,7 +232,7 @@ class InventarioRepository:
                 ORDER BY id DESC
                 LIMIT 1
                 """,
-                (codigo_articulo,),
+                (str(codigo_articulo).strip(),),
             ).fetchone()
             if row:
                 return row
@@ -246,7 +247,7 @@ class InventarioRepository:
                 ORDER BY p.id DESC
                 LIMIT 1
                 """,
-                (codigo_articulo,),
+                (str(codigo_articulo).strip(),),
             ).fetchone()
 
     @staticmethod
@@ -263,7 +264,7 @@ class InventarioRepository:
     ) -> None:
         with DatabaseConnection.conectar() as conn:
             if not conn.execute(
-                "SELECT 1 FROM inventario WHERE codigo = ?", (codigo_articulo,)
+                "SELECT 1 FROM inventario WHERE codigo = ?", (str(codigo_articulo).strip(),)
             ).fetchone():
                 raise ValueError(f"No existe el producto '{codigo_articulo}'.")
 
@@ -279,5 +280,5 @@ class InventarioRepository:
                     (codigo_articulo, etiqueta_id)
                 VALUES (?, ?)
                 """,
-                (codigo_articulo, row[0]),
+                (str(codigo_articulo).strip(), row[0]),
             )
