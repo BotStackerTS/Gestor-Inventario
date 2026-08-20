@@ -1,5 +1,6 @@
 # config.py
-DB_NAME = "inventario_pro.db"
+DB_NAME = "inventario.db"
 IMPUESTOS_PCT = 21.0
-INFLACION_PCT = 4.0
+COMISION_PCT = 5.0
+MARGEN_PCT = 10.0
 LOGISTICA_FIJA = 50.0

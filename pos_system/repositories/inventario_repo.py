@@ -1,102 +1,283 @@
 # repositories/inventario_repo.py
+from typing import Optional
+
 from database.connection import DatabaseConnection
 from models.entidades import Articulo
 
+
 class InventarioRepository:
+    """Acceso a datos de inventario, etiquetas y promociones."""
+
     @staticmethod
-    def insertar(articulo: Articulo):
+    def _articulo(row) -> Articulo:
+        return Articulo(
+            codigo=row[0],
+            nombre=row[1],
+            cantidad=int(row[2]),
+            precio_base=float(row[3]),
+            precio_final=float(row[4]),
+            stock_minimo=int(row[5]),
+        )
+
+    @staticmethod
+    def insertar(articulo: Articulo) -> None:
         with DatabaseConnection.conectar() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO inventario (codigo, nombre, cantidad, precio_base, precio_final, stock_minimo) 
+            conn.execute(
+                """
+                INSERT INTO inventario
+                    (codigo, nombre, cantidad, precio_base, precio_final, stock_minimo)
                 VALUES (?, ?, ?, ?, ?, ?)
-            """, (articulo.codigo, articulo.nombre, articulo.cantidad, articulo.precio_base, articulo.precio_final, articulo.stock_minimo))
-            conn.commit()
+                ON CONFLICT(codigo) DO UPDATE SET
+                    nombre = excluded.nombre,
+                    cantidad = excluded.cantidad,
+                    precio_base = excluded.precio_base,
+                    precio_final = excluded.precio_final,
+                    stock_minimo = excluded.stock_minimo
+                """,
+                (
+                    articulo.codigo,
+                    articulo.nombre,
+                    articulo.cantidad,
+                    articulo.precio_base,
+                    articulo.precio_final,
+                    articulo.stock_minimo,
+                ),
+            )
 
     @staticmethod
-    def obtener_por_codigo(codigo: str) -> Articulo | None:
+    def obtener_por_codigo(codigo: str) -> Optional[Articulo]:
         with DatabaseConnection.conectar() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT codigo, nombre, cantidad, precio_base, precio_final, stock_minimo 
-                FROM inventario WHERE codigo = ?
-            """, (codigo,))
-            row = cursor.fetchone()
-            if row:
-                return Articulo(codigo=row[0], nombre=row[1], cantidad=row[2], precio_base=row[3], precio_final=row[4], stock_minimo=row[5])
-            return None
+            row = conn.execute(
+                """
+                SELECT codigo, nombre, cantidad, precio_base,
+                       precio_final, stock_minimo
+                FROM inventario
+                WHERE codigo = ?
+                """,
+                (codigo,),
+            ).fetchone()
+            return InventarioRepository._articulo(row) if row else None
 
     @staticmethod
-    def obtener_todos() -> list[Articulo]:
+    def obtener_todos(etiqueta: Optional[str] = None) -> list[Articulo]:
         with DatabaseConnection.conectar() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT codigo, nombre, cantidad, precio_base, precio_final, stock_minimo FROM inventario")
-            rows = cursor.fetchall()
-            return [Articulo(codigo=r[0], nombre=r[1], cantidad=r[2], precio_base=r[3], precio_final=r[4], stock_minimo=r[5]) for r in rows]
+            if etiqueta and etiqueta != "Todas":
+                rows = conn.execute(
+                    """
+                    SELECT DISTINCT i.codigo, i.nombre, i.cantidad,
+                           i.precio_base, i.precio_final, i.stock_minimo
+                    FROM inventario i
+                    JOIN producto_etiqueta pe
+                        ON i.codigo = pe.codigo_articulo
+                    JOIN etiquetas e
+                        ON pe.etiqueta_id = e.id
+                    WHERE e.nombre = ?
+                    ORDER BY i.nombre COLLATE NOCASE
+                    """,
+                    (etiqueta,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT codigo, nombre, cantidad, precio_base,
+                           precio_final, stock_minimo
+                    FROM inventario
+                    ORDER BY nombre COLLATE NOCASE
+                    """
+                ).fetchall()
+            return [InventarioRepository._articulo(row) for row in rows]
 
     @staticmethod
-    def actualizar(codigo: str, campos: dict):
+    def obtener_faltantes() -> list[Articulo]:
+        with DatabaseConnection.conectar() as conn:
+            rows = conn.execute(
+                """
+                SELECT codigo, nombre, cantidad, precio_base,
+                       precio_final, stock_minimo
+                FROM inventario
+                WHERE cantidad <= 0
+                ORDER BY nombre COLLATE NOCASE
+                """
+            ).fetchall()
+            return [InventarioRepository._articulo(row) for row in rows]
+
+    @staticmethod
+    def actualizar(codigo: str, campos: dict) -> None:
         if not campos:
             return
-        columnas = ", ".join([f"{k} = ?" for k in campos.keys()])
+
+        permitidas = {
+            "nombre",
+            "cantidad",
+            "precio_base",
+            "precio_final",
+            "stock_minimo",
+        }
+        desconocidas = set(campos) - permitidas
+        if desconocidas:
+            raise ValueError(
+                "Campos de inventario no permitidos: "
+                + ", ".join(sorted(desconocidas))
+            )
+
+        columnas = ", ".join(f"{campo} = ?" for campo in campos)
         valores = list(campos.values()) + [codigo]
+
         with DatabaseConnection.conectar() as conn:
-            cursor = conn.cursor()
-            cursor.execute(f"UPDATE inventario SET {columnas} WHERE codigo = ?", valores)
-            conn.commit()
+            cursor = conn.execute(
+                f"UPDATE inventario SET {columnas} WHERE codigo = ?", valores
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"No existe el artículo con código '{codigo}'.")
 
     @staticmethod
-    def eliminar(codigo: str):
+    def eliminar(codigo: str) -> None:
         with DatabaseConnection.conectar() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM inventario WHERE codigo = ?", (codigo,))
-            conn.commit()
+            cursor = conn.execute(
+                "DELETE FROM inventario WHERE codigo = ?", (codigo,)
+            )
+            if cursor.rowcount == 0:
+                raise ValueError(f"No existe el artículo con código '{codigo}'.")
 
     @staticmethod
-    def gestionar_etiqueta(nombre_etiqueta: str):
-        nombre_etiqueta = nombre_etiqueta.strip().lower()
-        if not nombre_etiqueta.startswith("#"):
-            nombre_etiqueta = "#" + nombre_etiqueta
+    def guardar_promocion(
+        nombre: str,
+        tipo: str,
+        valor: float,
+        codigo_articulo: Optional[str] = None,
+        etiqueta_nombre: Optional[str] = None,
+    ) -> None:
+        nombre = nombre.strip()
+        tipo = tipo.strip().upper()
+        codigo_articulo = codigo_articulo.strip() if codigo_articulo else None
+        etiqueta_nombre = (
+            etiqueta_nombre.strip()
+            if etiqueta_nombre and etiqueta_nombre != "Ninguna"
+            else None
+        )
+
+        if not nombre:
+            raise ValueError("El nombre de la promoción es obligatorio.")
+        if tipo not in {"2X1", "PORCENTAJE"}:
+            raise ValueError("Tipo de promoción no válido.")
+        if tipo == "PORCENTAJE" and not 0 <= float(valor) <= 100:
+            raise ValueError("El descuento debe estar entre 0 y 100%.")
+        if codigo_articulo and etiqueta_nombre:
+            raise ValueError(
+                "Una promoción debe aplicarse a un producto o a una etiqueta, no a ambos."
+            )
+        if not codigo_articulo and not etiqueta_nombre:
+            raise ValueError("Debe indicar un producto o una etiqueta.")
+
         with DatabaseConnection.conectar() as conn:
-            cursor = conn.cursor()
-            cursor.execute("INSERT OR IGNORE INTO etiquetas (nombre) VALUES (?)", (nombre_etiqueta,))
-            conn.commit()
+            etiqueta_id = None
+            if etiqueta_nombre:
+                row = conn.execute(
+                    "SELECT id FROM etiquetas WHERE nombre = ?", (etiqueta_nombre,)
+                ).fetchone()
+                if not row:
+                    raise ValueError(f"No existe la etiqueta '{etiqueta_nombre}'.")
+                etiqueta_id = row[0]
+
+            if codigo_articulo:
+                if not conn.execute(
+                    "SELECT 1 FROM inventario WHERE codigo = ?", (codigo_articulo,)
+                ).fetchone():
+                    raise ValueError(
+                        f"No existe el producto con código '{codigo_articulo}'."
+                    )
+
+            conn.execute(
+                """
+                INSERT INTO promociones
+                    (nombre, codigo_articulo, etiqueta_id, tipo, valor)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (nombre, codigo_articulo, etiqueta_id, tipo, float(valor)),
+            )
 
     @staticmethod
-    def obtener_etiquetas():
+    def obtener_promociones() -> list[tuple]:
         with DatabaseConnection.conectar() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT id, nombre FROM etiquetas")
-            return cursor.fetchall()
+            return conn.execute(
+                """
+                SELECT p.id, p.nombre,
+                       COALESCE(i.nombre, 'Etiqueta: ' || e.nombre) AS destino,
+                       p.tipo, p.valor
+                FROM promociones p
+                LEFT JOIN inventario i ON p.codigo_articulo = i.codigo
+                LEFT JOIN etiquetas e ON p.etiqueta_id = e.id
+                ORDER BY p.id DESC
+                """
+            ).fetchall()
 
     @staticmethod
-    def asignar_etiqueta_a_producto(codigo_articulo: str, etiqueta_id: int):
+    def eliminar_promocion(promo_id: int) -> None:
         with DatabaseConnection.conectar() as conn:
-            cursor = conn.cursor()
-            cursor.execute("INSERT OR IGNORE INTO producto_etiqueta (codigo_articulo, etiqueta_id) VALUES (?, ?)", (codigo_articulo, etiqueta_id))
-            conn.commit()
+            cursor = conn.execute(
+                "DELETE FROM promociones WHERE id = ?", (int(promo_id),)
+            )
+            if cursor.rowcount == 0:
+                raise ValueError("La promoción seleccionada ya no existe.")
 
     @staticmethod
-    def obtener_etiquetas_de_producto(codigo_articulo: str):
+    def verificar_promocion_activa(codigo_articulo: str):
         with DatabaseConnection.conectar() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT e.nombre FROM etiquetas e
-                JOIN producto_etiqueta pe ON e.id = pe.etiqueta_id
+            row = conn.execute(
+                """
+                SELECT tipo, valor
+                FROM promociones
+                WHERE codigo_articulo = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (codigo_articulo,),
+            ).fetchone()
+            if row:
+                return row
+
+            return conn.execute(
+                """
+                SELECT p.tipo, p.valor
+                FROM promociones p
+                JOIN producto_etiqueta pe
+                    ON p.etiqueta_id = pe.etiqueta_id
                 WHERE pe.codigo_articulo = ?
-            """, (codigo_articulo,))
-            return [r[0] for r in cursor.fetchall()]
+                ORDER BY p.id DESC
+                LIMIT 1
+                """,
+                (codigo_articulo,),
+            ).fetchone()
 
     @staticmethod
-    def guardar_promocion(codigo_articulo: str, tipo: str, valor: float):
+    def obtener_etiquetas() -> list[str]:
         with DatabaseConnection.conectar() as conn:
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO promociones (codigo_articulo, tipo, valor) VALUES (?, ?, ?)", (codigo_articulo, tipo, valor))
-            conn.commit()
+            rows = conn.execute(
+                "SELECT nombre FROM etiquetas ORDER BY nombre COLLATE NOCASE"
+            ).fetchall()
+            return [row[0] for row in rows]
 
     @staticmethod
-    def obtener_promociones():
+    def asociar_etiqueta_a_producto(
+        codigo_articulo: str, nombre_etiqueta: str
+    ) -> None:
         with DatabaseConnection.conectar() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT p.id, i.nombre, p.tipo, p.valor, p.codigo_articulo FROM promociones p JOIN inventario i ON p.codigo_articulo = i.codigo")
-            return cursor.fetchall()
+            if not conn.execute(
+                "SELECT 1 FROM inventario WHERE codigo = ?", (codigo_articulo,)
+            ).fetchone():
+                raise ValueError(f"No existe el producto '{codigo_articulo}'.")
+
+            row = conn.execute(
+                "SELECT id FROM etiquetas WHERE nombre = ?", (nombre_etiqueta,)
+            ).fetchone()
+            if not row:
+                raise ValueError(f"No existe la etiqueta '{nombre_etiqueta}'.")
+
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO producto_etiqueta
+                    (codigo_articulo, etiqueta_id)
+                VALUES (?, ?)
+                """,
+                (codigo_articulo, row[0]),
+            )

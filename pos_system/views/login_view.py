@@ -1,42 +1,46 @@
 # views/login_view.py
 import tkinter as tk
 from tkinter import messagebox
-from services.auth_service import AuthService
+from database.connection import DatabaseConnection
 
 class LoginView(tk.Toplevel):
-    def __init__(self, parent, on_login_success):
-        super().__init__(parent)
-        self.title("Acceso al Sistema - POS Pro")
-        self.geometry("400x300")
-        self.protocol("WM_DELETE_WINDOW", parent.quit) # Cierra toda la app si cierran el login
+    def __init__(self, master, on_login_success):
+        super().__init__(master)
         self.on_login_success = on_login_success
-        
-        self.crear_widgets()
+        self.title("POS Pro - Iniciar Sesión")
+        self.geometry("350x250")
+        self.resizable(False, False)
+        self.protocol("WM_DELETE_WINDOW", master.destroy)
+        self.crear_interfaz()
 
-    def crear_widgets(self):
-        marco = tk.Frame(self, padx=20, pady=20)
-        marco.place(relx=0.5, rely=0.5, anchor="center")
+    def crear_interfaz(self):
+        tk.Label(self, text="Iniciar Sesión", font=("Segoe UI", 14, "bold")).pack(pady=15)
 
-        tk.Label(marco, text="🔐 Inicio de Sesión", font=("Segoe UI", 14, "bold")).pack(pady=10)
-        
-        tk.Label(marco, text="Usuario:", font=("Segoe UI", 10)).pack(anchor="w")
-        self.e_usuario = tk.Entry(marco, width=25, font=("Segoe UI", 10))
-        self.e_usuario.pack(pady=5)
-        
-        tk.Label(marco, text="Contraseña:", font=("Segoe UI", 10)).pack(anchor="w")
-        self.e_password = tk.Entry(marco, show="*", width=25, font=("Segoe UI", 10))
-        self.e_password.pack(pady=5)
-        
-        tk.Button(marco, text="Ingresar", bg="#2E7D32", fg="white", font=("Segoe UI", 10, "bold"), 
-                  width=18, command=self.intentar_login).pack(pady=15)
+        f_form = tk.Frame(self)
+        f_form.pack(pady=5)
+
+        tk.Label(f_form, text="Usuario:").grid(row=0, column=0, sticky="w", pady=5)
+        self.e_usuario = tk.Entry(f_form, width=20)
+        self.e_usuario.grid(row=0, column=1, padx=10, pady=5)
+
+        tk.Label(f_form, text="Contraseña:").grid(row=1, column=0, sticky="w", pady=5)
+        self.e_pass = tk.Entry(f_form, width=20, show="*")
+        self.e_pass.grid(row=1, column=1, padx=10, pady=5)
+
+        tk.Button(self, text="Ingresar", bg="#2E7D32", fg="white", width=15, command=self.intentar_login).pack(pady=15)
 
     def intentar_login(self):
-        usuario = self.e_usuario.get()
-        password = self.e_password.get()
-        
-        rol = AuthService.login(usuario, password)
-        if rol:
-            self.destroy() # Cierra la ventana de login
+        usuario = self.e_usuario.get().strip()
+        password = self.e_pass.get().strip()
+
+        with DatabaseConnection.conectar() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT rol FROM usuarios WHERE usuario = ? AND password_hash = ?", (usuario, password))
+            row = cursor.fetchone()
+
+        if row:
+            rol = row[0]
+            self.destroy()
             self.on_login_success(usuario, rol)
         else:
-            messagebox.showerror("Error de Acceso", "Usuario o contraseña incorrectos.")
+            messagebox.showerror("Error", "Usuario o contraseña incorrectos")
