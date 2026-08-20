@@ -9,7 +9,6 @@ class SalesService:
     def procesar_venta(carrito: list[tuple[str, int]]) -> VentaResultado:
         with DatabaseConnection.conectar() as conn:
             cursor = conn.cursor()
-            # Usar BEGIN IMMEDIATE para transacciones concurrentes seguras
             cursor.execute("BEGIN IMMEDIATE;")
             
             venta_id = VentaRepository.crear_venta(conn, total=0.0)
@@ -24,11 +23,23 @@ class SalesService:
                 if articulo.cantidad < cant_vendida:
                     raise Exception(f"Stock insuficiente para '{articulo.nombre}' (Disponible: {articulo.cantidad}).")
 
-                subtotal = cant_vendida * articulo.precio_final
+                # Verificar si tiene promociones activas
+                cursor.execute("SELECT tipo, valor FROM promociones WHERE codigo_articulo = ?", (codigo,))
+                promo = cursor.fetchone()
+                
+                cant_a_cobrar = cant_vendida
+                if promo:
+                    tipo_promo, valor_promo = promo
+                    if tipo_promo == "2X1":
+                        # Cada 2 unidades, se paga 1
+                        pares = cant_vendida // 2
+                        sobrantes = cant_vendida % 2
+                        cant_a_cobrar = (pares * 1) + sobrantes
+
+                subtotal = cant_a_cobrar * articulo.precio_final
                 total_venta += subtotal
                 nuevo_stock = articulo.cantidad - cant_vendida
 
-                # Actualizar stock de forma atómica
                 cursor.execute("UPDATE inventario SET cantidad = ? WHERE codigo = ?", (nuevo_stock, codigo))
                 VentaRepository.agregar_detalle(conn, venta_id, codigo, cant_vendida, subtotal)
 

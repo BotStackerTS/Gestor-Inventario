@@ -51,3 +51,52 @@ class InventarioRepository:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM inventario WHERE codigo = ?", (codigo,))
             conn.commit()
+
+    @staticmethod
+    def gestionar_etiqueta(nombre_etiqueta: str):
+        nombre_etiqueta = nombre_etiqueta.strip().lower()
+        if not nombre_etiqueta.startswith("#"):
+            nombre_etiqueta = "#" + nombre_etiqueta
+        with DatabaseConnection.conectar() as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR IGNORE INTO etiquetas (nombre) VALUES (?)", (nombre_etiqueta,))
+            conn.commit()
+
+    @staticmethod
+    def obtener_etiquetas():
+        with DatabaseConnection.conectar() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, nombre FROM etiquetas")
+            return cursor.fetchall()
+
+    @staticmethod
+    def asignar_etiqueta_a_producto(codigo_articulo: str, etiqueta_id: int):
+        with DatabaseConnection.conectar() as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR IGNORE INTO producto_etiqueta (codigo_articulo, etiqueta_id) VALUES (?, ?)", (codigo_articulo, etiqueta_id))
+            conn.commit()
+
+    @staticmethod
+    def obtener_etiquetas_de_producto(codigo_articulo: str):
+        with DatabaseConnection.conectar() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT e.nombre FROM etiquetas e
+                JOIN producto_etiqueta pe ON e.id = pe.etiqueta_id
+                WHERE pe.codigo_articulo = ?
+            """, (codigo_articulo,))
+            return [r[0] for r in cursor.fetchall()]
+
+    @staticmethod
+    def guardar_promocion(codigo_articulo: str, tipo: str, valor: float):
+        with DatabaseConnection.conectar() as conn:
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO promociones (codigo_articulo, tipo, valor) VALUES (?, ?, ?)", (codigo_articulo, tipo, valor))
+            conn.commit()
+
+    @staticmethod
+    def obtener_promociones():
+        with DatabaseConnection.conectar() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT p.id, i.nombre, p.tipo, p.valor, p.codigo_articulo FROM promociones p JOIN inventario i ON p.codigo_articulo = i.codigo")
+            return cursor.fetchall()

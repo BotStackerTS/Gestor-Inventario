@@ -6,7 +6,6 @@ class DatabaseConnection:
     @staticmethod
     def conectar():
         conn = sqlite3.connect(DB_NAME)
-        # Forzar claves foráneas en SQLite (por defecto vienen desactivadas)
         conn.execute("PRAGMA foreign_keys = ON;")
         return conn
 
@@ -30,6 +29,27 @@ class DatabaseConnection:
                     precio_final REAL NOT NULL,
                     stock_minimo INTEGER DEFAULT 5
                 );
+
+                CREATE TABLE IF NOT EXISTS etiquetas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nombre TEXT UNIQUE NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS producto_etiqueta (
+                    codigo_articulo TEXT,
+                    etiqueta_id INTEGER,
+                    PRIMARY KEY (codigo_articulo, etiqueta_id),
+                    FOREIGN KEY (codigo_articulo) REFERENCES inventario(codigo) ON DELETE CASCADE,
+                    FOREIGN KEY (etiqueta_id) REFERENCES etiquetas(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS promociones (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    codigo_articulo TEXT NOT NULL,
+                    tipo TEXT NOT NULL, -- Ej: '2X1', 'DESCUENTO_PCT'
+                    valor REAL NOT NULL, -- Ej: 50.0 para 50% o 2 para 2x1
+                    FOREIGN KEY (codigo_articulo) REFERENCES inventario(codigo) ON DELETE CASCADE
+                );
                 
                 CREATE TABLE IF NOT EXISTS ventas (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -46,8 +66,5 @@ class DatabaseConnection:
                     FOREIGN KEY (venta_id) REFERENCES ventas(id) ON DELETE CASCADE,
                     FOREIGN KEY (codigo_articulo) REFERENCES inventario(codigo)
                 );
-
-                CREATE INDEX IF NOT EXISTS idx_detalle_venta_venta ON detalle_venta(venta_id);
-                CREATE INDEX IF NOT EXISTS idx_detalle_venta_articulo ON detalle_venta(codigo_articulo);
             ''')
             conn.commit()
