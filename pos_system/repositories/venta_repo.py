@@ -27,3 +27,17 @@ class VentaRepository:
             cursor = conn.cursor()
             cursor.execute("SELECT id, fecha, total FROM ventas ORDER BY id DESC")
             return cursor.fetchall()
+
+    @staticmethod
+    def obtener_tendencias_productos():
+        with DatabaseConnection.conectar() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT i.nombre, SUM(d.cantidad) as total_vendido
+                FROM detalle_venta d
+                JOIN inventario i ON d.codigo_articulo = i.codigo
+                GROUP BY i.codigo
+                ORDER BY total_vendido DESC
+                LIMIT 5;
+            """)
+            return cursor.fetchall()

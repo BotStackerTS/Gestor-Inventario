@@ -30,10 +30,7 @@ class InventarioRepository:
     def obtener_todos() -> list[Articulo]:
         with DatabaseConnection.conectar() as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT codigo, nombre, cantidad, precio_base, precio_final, stock_minimo 
-                FROM inventario
-            """)
+            cursor.execute("SELECT codigo, nombre, cantidad, precio_base, precio_final, stock_minimo FROM inventario")
             rows = cursor.fetchall()
             return [Articulo(codigo=r[0], nombre=r[1], cantidad=r[2], precio_base=r[3], precio_final=r[4], stock_minimo=r[5]) for r in rows]
 
@@ -43,7 +40,6 @@ class InventarioRepository:
             return
         columnas = ", ".join([f"{k} = ?" for k in campos.keys()])
         valores = list(campos.values()) + [codigo]
-        
         with DatabaseConnection.conectar() as conn:
             cursor = conn.cursor()
             cursor.execute(f"UPDATE inventario SET {columnas} WHERE codigo = ?", valores)
