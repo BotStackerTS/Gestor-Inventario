@@ -1,6 +1,8 @@
 # views/main_window.py
+
 import tkinter as tk
 from tkinter import ttk, messagebox
+from datetime import datetime
 
 from database.connection import DatabaseConnection
 from services.sales_service import SalesService
@@ -11,7 +13,7 @@ import config
 
 
 class MainWindow(tk.Tk):
-    """Ventana principal del POS optimizada para cajeros, lectores y diseño minimalista."""
+    """Ventana principal del POS optimizada para cajeros."""
 
     REFRESH_MS = 750
 
@@ -21,15 +23,22 @@ class MainWindow(tk.Tk):
     ACCENT = "#2563EB"
     SUCCESS = "#16A34A"
     DANGER = "#DC2626"
+    WARNING = "#D97706"
+    PURPLE = "#7C3AED"
     TEXT_MAIN = "#1F2937"
     TEXT_MUTED = "#6B7280"
     BORDER_COLOR = "#E5E7EB"
 
     def __init__(self, usuario: str, rol: str):
         super().__init__()
+
         self.usuario = usuario
         self.rol = rol
-        self.title(f"POS Pro — {usuario.capitalize()} ({rol.upper()})")
+
+        self.title(
+            f"POS Pro — {usuario.capitalize()} ({rol.upper()})"
+        )
+
         self.geometry("1200x800")
         self.minsize(950, 700)
         self.configure(bg=self.BG_COLOR)
@@ -38,32 +47,140 @@ class MainWindow(tk.Tk):
         self._refresh_faltantes_view = None
         self._refresh_promos_view = None
 
+        # ======================================================
+        # CAJA
+        # ======================================================
+
+        self._caja_id = None
+        self._caja_abierta = False
+        self._caja_fondo_inicial = 0.0
+
+        self._inicializar_tablas_caja()
+
         self._configurar_estilos()
         self.crear_interfaz()
-        self.after(self.REFRESH_MS, self._sincronizar_vistas)
+
+        self.after(
+            self.REFRESH_MS,
+            self._sincronizar_vistas
+        )
+
+    # ==========================================================
+    # BASE DE DATOS - CAJA
+    # ==========================================================
+
+    def _inicializar_tablas_caja(self):
+        """
+        Crea las tablas necesarias para manejar:
+
+        - Apertura de caja
+        - Retiros
+        - Cierre
+        - Diferencias
+
+        No modifica las tablas existentes del sistema.
+        """
+
+        try:
+            with DatabaseConnection.conectar() as conn:
+
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS arqueos_caja (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        usuario TEXT NOT NULL,
+                        fecha_apertura TEXT NOT NULL,
+                        fecha_cierre TEXT,
+                        fondo_inicial REAL NOT NULL DEFAULT 0,
+                        efectivo_teorico REAL NOT NULL DEFAULT 0,
+                        efectivo_real REAL NOT NULL DEFAULT 0,
+                        transferencias REAL NOT NULL DEFAULT 0,
+                        total_recaudado REAL NOT NULL DEFAULT 0,
+                        total_retiros REAL NOT NULL DEFAULT 0,
+                        diferencia REAL NOT NULL DEFAULT 0,
+                        estado TEXT NOT NULL DEFAULT 'ABIERTO'
+                    )
+                    """
+                )
+
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS retiros_caja (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        arqueo_id INTEGER NOT NULL,
+                        usuario TEXT NOT NULL,
+                        fecha TEXT NOT NULL,
+                        monto REAL NOT NULL,
+                        motivo TEXT NOT NULL,
+                        FOREIGN KEY(arqueo_id)
+                            REFERENCES arqueos_caja(id)
+                    )
+                    """
+                )
+
+                conn.commit()
+
+        except Exception as exc:
+            messagebox.showerror(
+                "Error de base de datos",
+                (
+                    "No se pudieron inicializar las tablas "
+                    f"de caja.\n\n{exc}"
+                )
+            )
+
+    # ==========================================================
+    # ESTILOS
+    # ==========================================================
 
     def _configurar_estilos(self):
         style = ttk.Style()
+
         style.theme_use("clam")
 
-        style.configure("TNotebook", background=self.BG_COLOR, borderwidth=0)
         style.configure(
-            "TNotebook.Tab", 
-            background="#E9ECEF", 
+            "TNotebook",
+            background=self.BG_COLOR,
+            borderwidth=0
+        )
+
+        style.configure(
+            "TNotebook.Tab",
+            background="#E9ECEF",
             foreground=self.TEXT_MAIN,
             padding=(16, 10),
             font=("Segoe UI", 10, "bold")
         )
+
         style.map(
             "TNotebook.Tab",
-            background=[("selected", self.CARD_BG)],
-            foreground=[("selected", self.ACCENT)]
+            background=[
+                ("selected", self.CARD_BG)
+            ],
+            foreground=[
+                ("selected", self.ACCENT)
+            ]
         )
 
-        style.configure("TFrame", background=self.BG_COLOR)
-        style.configure("TLabelframe", background=self.CARD_BG, bordercolor=self.BORDER_COLOR, relief="solid")
-        style.configure("TLabelframe.Label", background=self.CARD_BG, foreground=self.TEXT_MAIN, font=("Segoe UI", 10, "bold"))
-        
+        style.configure(
+            "TFrame",
+            background=self.BG_COLOR
+        )
+
+        style.configure(
+            "TLabelframe",
+            background=self.CARD_BG,
+            bordercolor=self.BORDER_COLOR,
+            relief="solid"
+        )
+
+        style.configure(
+            "TLabelframe.Label",
+            background=self.CARD_BG,
+            foreground=self.TEXT_MAIN,
+            font=("Segoe UI", 10, "bold")
+        )
+
         style.configure(
             "Treeview",
             background=self.CARD_BG,
@@ -72,6 +189,7 @@ class MainWindow(tk.Tk):
             rowheight=26,
             font=("Segoe UI", 9)
         )
+
         style.configure(
             "Treeview.Heading",
             background="#F1F3F5",
@@ -79,145 +197,467 @@ class MainWindow(tk.Tk):
             font=("Segoe UI", 9, "bold")
         )
 
+    # ==========================================================
+    # INTERFAZ PRINCIPAL
+    # ==========================================================
+
     def crear_interfaz(self):
+
         nb = ttk.Notebook(self)
-        nb.pack(fill="both", expand=True, padx=16, pady=16)
+
+        nb.pack(
+            fill="both",
+            expand=True,
+            padx=16,
+            pady=16
+        )
+
+        # ------------------------------------------------------
+        # CAJA RÁPIDA
+        # ------------------------------------------------------
 
         f_caja = ttk.Frame(nb)
-        nb.add(f_caja, text="  🛒  Caja Rápida  ")
-        self._construir_seguro(self.construir_pestana_caja, f_caja, "Caja")
+
+        nb.add(
+            f_caja,
+            text="  🛒  Caja Rápida  "
+        )
+
+        self._construir_seguro(
+            self.construir_pestana_caja,
+            f_caja,
+            "Caja"
+        )
+
+        # ------------------------------------------------------
+        # ARQUEO Y CIERRE
+        # ------------------------------------------------------
+
+        f_arqueo = ttk.Frame(nb)
+
+        nb.add(
+            f_arqueo,
+            text="  💰  Arqueo y Cierre  "
+        )
+
+        self._construir_seguro(
+            self.construir_pestana_arqueo,
+            f_arqueo,
+            "Arqueo y Cierre"
+        )
+
+        # ------------------------------------------------------
+        # ADMINISTRACIÓN
+        # ------------------------------------------------------
 
         if self.rol == "admin":
+
             vistas_admin = [
-                ("  📦  Inventario  ", self.construir_pestana_inventario),
-                ("  🏷️  Promociones  ", self.construir_pestana_promociones),
-                ("  ⚙️  Configuración  ", self.construir_pestana_config),
-                ("  🔖  Etiquetas  ", self.construir_pestana_etiquetas),
+                (
+                    "  📦  Inventario  ",
+                    self.construir_pestana_inventario
+                ),
+                (
+                    "  🏷️  Promociones  ",
+                    self.construir_pestana_promociones
+                ),
+                (
+                    "  ⚙️  Configuración  ",
+                    self.construir_pestana_config
+                ),
+                (
+                    "  🔖  Etiquetas  ",
+                    self.construir_pestana_etiquetas
+                ),
             ]
+
             for titulo, constructor in vistas_admin:
+
                 frame = ttk.Frame(nb)
-                nb.add(frame, text=titulo)
-                self._construir_seguro(constructor, frame, titulo.strip())
+
+                nb.add(
+                    frame,
+                    text=titulo
+                )
+
+                self._construir_seguro(
+                    constructor,
+                    frame,
+                    titulo.strip()
+                )
+
+        # ------------------------------------------------------
+        # FALTANTES
+        # ------------------------------------------------------
 
         f_faltantes = ttk.Frame(nb)
-        nb.add(f_faltantes, text="  ⚠️  Faltantes  ")
-        self._construir_seguro(self.construir_pestana_faltantes, f_faltantes, "Faltantes")
+
+        nb.add(
+            f_faltantes,
+            text="  ⚠️  Faltantes  "
+        )
+
+        self._construir_seguro(
+            self.construir_pestana_faltantes,
+            f_faltantes,
+            "Faltantes"
+        )
+
+        # ------------------------------------------------------
+        # REPORTES
+        # ------------------------------------------------------
 
         f_chatbot = ttk.Frame(nb)
-        nb.add(f_chatbot, text="  🤖  Reportes & IA  ")
-        self._construir_seguro(self.construir_pestana_chatbot, f_chatbot, "Asistente Virtual")
 
-    def _construir_seguro(self, constructor, parent, nombre):
+        nb.add(
+            f_chatbot,
+            text="  🤖  Reportes & IA  "
+        )
+
+        self._construir_seguro(
+            self.construir_pestana_chatbot,
+            f_chatbot,
+            "Asistente Virtual"
+        )
+
+    # ==========================================================
+    # CONSTRUCTOR SEGURO
+    # ==========================================================
+
+    def _construir_seguro(
+        self,
+        constructor,
+        parent,
+        nombre
+    ):
+
         try:
+
             constructor(parent)
+
         except Exception as exc:
+
             for widget in parent.winfo_children():
                 widget.destroy()
+
             ttk.Label(
                 parent,
-                text=f"No se pudo cargar {nombre}.\n{exc}",
-                justify="center",
-            ).pack(expand=True, padx=20, pady=20)
+                text=(
+                    f"No se pudo cargar {nombre}.\n"
+                    f"{exc}"
+                ),
+                justify="center"
+            ).pack(
+                expand=True,
+                padx=20,
+                pady=20
+            )
+
+    # ==========================================================
+    # SINCRONIZACIÓN
+    # ==========================================================
 
     def _sincronizar_vistas(self):
+
         try:
-            if callable(self._refresh_inventory_view):
-                self._refresh_inventory_view(silencioso=True)
-            if callable(self._refresh_faltantes_view):
-                self._refresh_faltantes_view(silencioso=True)
-            if callable(self._refresh_promos_view):
-                self._refresh_promos_view(silencioso=True)
+
+            if callable(
+                self._refresh_inventory_view
+            ):
+                self._refresh_inventory_view(
+                    silencioso=True
+                )
+
+            if callable(
+                self._refresh_faltantes_view
+            ):
+                self._refresh_faltantes_view(
+                    silencioso=True
+                )
+
+            if callable(
+                self._refresh_promos_view
+            ):
+                self._refresh_promos_view(
+                    silencioso=True
+                )
+
         except tk.TclError:
             return
+
         except Exception:
             pass
+
         finally:
+
             try:
+
                 if self.winfo_exists():
-                    self.after(self.REFRESH_MS, self._sincronizar_vistas)
+
+                    self.after(
+                        self.REFRESH_MS,
+                        self._sincronizar_vistas
+                    )
+
             except tk.TclError:
                 pass
 
+    # ==========================================================
+    # CAJA RÁPIDA
+    # ==========================================================
+
     def construir_pestana_caja(self, parent):
+
         tk.Label(
             parent,
             text="Terminal de Cobro (Optimizado para Lector de Barras)",
             font=("Segoe UI", 16, "bold"),
             bg=self.BG_COLOR,
             fg=self.PRIMARY
-        ).pack(pady=16)
+        ).pack(
+            pady=16
+        )
 
-        f_form = ttk.LabelFrame(parent, text=" Escaneo y Cobro ", padding=20)
-        f_form.pack(padx=20, pady=10, fill="x")
+        f_form = ttk.LabelFrame(
+            parent,
+            text=" Escaneo y Cobro ",
+            padding=20
+        )
 
-        ttk.Label(f_form, text="Código Artículo / Escáner:").grid(row=0, column=0, sticky="w", pady=8)
-        e_cod = ttk.Entry(f_form, width=30, font=("Segoe UI", 11))
-        e_cod.grid(row=0, column=1, padx=12, pady=8)
+        f_form.pack(
+            padx=20,
+            pady=10,
+            fill="x"
+        )
+
+        ttk.Label(
+            f_form,
+            text="Código Artículo / Escáner:"
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=8
+        )
+
+        e_cod = ttk.Entry(
+            f_form,
+            width=30,
+            font=("Segoe UI", 11)
+        )
+
+        e_cod.grid(
+            row=0,
+            column=1,
+            padx=12,
+            pady=8
+        )
+
         e_cod.focus()
 
-        ttk.Label(f_form, text="Cantidad:").grid(row=1, column=0, sticky="w", pady=8)
-        e_cant = ttk.Entry(f_form, width=15, font=("Segoe UI", 11))
-        e_cant.insert(0, "1")
-        e_cant.grid(row=1, column=1, sticky="w", padx=12, pady=8)
+        ttk.Label(
+            f_form,
+            text="Cantidad:"
+        ).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=8
+        )
+
+        e_cant = ttk.Entry(
+            f_form,
+            width=15,
+            font=("Segoe UI", 11)
+        )
+
+        e_cant.insert(
+            0,
+            "1"
+        )
+
+        e_cant.grid(
+            row=1,
+            column=1,
+            sticky="w",
+            padx=12,
+            pady=8
+        )
 
         def cobrar(event=None):
+
             try:
+
                 codigo = e_cod.get().strip()
+
                 cantidad_str = e_cant.get().strip()
+
                 if not codigo:
                     return
-                cantidad = int(cantidad_str) if cantidad_str else 1
+
+                cantidad = (
+                    int(cantidad_str)
+                    if cantidad_str
+                    else 1
+                )
+
                 if cantidad <= 0:
-                    raise ValueError("La cantidad debe ser mayor a cero.")
+                    raise ValueError(
+                        "La cantidad debe ser mayor a cero."
+                    )
 
-                art = InventarioRepository.obtener_por_codigo(codigo)
+                art = (
+                    InventarioRepository
+                    .obtener_por_codigo(codigo)
+                )
+
                 if not art:
-                    messagebox.showerror("Error", f"Artículo con código '{codigo}' no encontrado.")
-                    e_cod.delete(0, tk.END)
-                    return
-                if cantidad > art.cantidad:
-                    messagebox.showerror("Stock insuficiente", f"Stock disponible: {art.cantidad}")
+
+                    messagebox.showerror(
+                        "Error",
+                        (
+                            f"Artículo con código "
+                            f"'{codigo}' no encontrado."
+                        )
+                    )
+
+                    e_cod.delete(
+                        0,
+                        tk.END
+                    )
+
                     return
 
-                promo = InventarioRepository.verificar_promocion_activa(codigo)
+                if cantidad > art.cantidad:
+
+                    messagebox.showerror(
+                        "Stock insuficiente",
+                        (
+                            f"Stock disponible: "
+                            f"{art.cantidad}"
+                        )
+                    )
+
+                    return
+
+                promo = (
+                    InventarioRepository
+                    .verificar_promocion_activa(
+                        codigo
+                    )
+                )
+
                 cantidad_cobrar = cantidad
-                monto_total = art.precio_final * cantidad
+
+                monto_total = (
+                    art.precio_final *
+                    cantidad
+                )
+
                 promo_txt = "Ninguna"
 
                 if promo:
-                    tipo_p, valor_p = promo
-                    if tipo_p == "2X1":
-                        gratis = cantidad // 2
-                        cantidad_cobrar = cantidad - gratis
-                        monto_total = art.precio_final * cantidad_cobrar
-                        promo_txt = f"Promoción 2x1 Aplicada (-{gratis} sin cargo)"
-                    elif tipo_p == "PORCENTAJE":
-                        descuento = monto_total * (float(valor_p) / 100)
-                        monto_total -= descuento
-                        promo_txt = f"Descuento de {valor_p}% aplicado"
 
-                resultado = SalesService.procesar_venta([(codigo, cantidad_cobrar)])
-                
+                    tipo_p, valor_p = promo
+
+                    if tipo_p == "2X1":
+
+                        gratis = cantidad // 2
+
+                        cantidad_cobrar = (
+                            cantidad - gratis
+                        )
+
+                        monto_total = (
+                            art.precio_final *
+                            cantidad_cobrar
+                        )
+
+                        promo_txt = (
+                            "Promoción 2x1 Aplicada "
+                            f"(-{gratis} sin cargo)"
+                        )
+
+                    elif tipo_p == "PORCENTAJE":
+
+                        descuento = (
+                            monto_total *
+                            (
+                                float(valor_p) /
+                                100
+                            )
+                        )
+
+                        monto_total -= descuento
+
+                        promo_txt = (
+                            f"Descuento de "
+                            f"{valor_p}% aplicado"
+                        )
+
+                resultado = (
+                    SalesService.procesar_venta(
+                        [
+                            (
+                                codigo,
+                                cantidad_cobrar
+                            )
+                        ]
+                    )
+                )
+
                 detalle_txt = (
-                    f"🎫 TICKET DE VENTA #{resultado.venta_id}\n"
+                    f"🎫 TICKET DE VENTA "
+                    f"#{resultado.venta_id}\n"
                     "----------------------------------------\n"
                     f"Producto: {art.nombre}\n"
                     f"Cantidad: {cantidad}\n"
                     f"Promoción: {promo_txt}\n"
                     "----------------------------------------\n"
-                    f"💰 TOTAL PAGADO: ${monto_total:.2f}"
+                    f"💰 TOTAL PAGADO: "
+                    f"${monto_total:.2f}"
                 )
-                messagebox.showinfo("Ticket Exitoso", detalle_txt)
-                e_cod.delete(0, tk.END)
-                e_cant.delete(0, tk.END)
-                e_cant.insert(0, "1")
-                e_cod.focus()
-            except ValueError as exc:
-                messagebox.showerror("Error", str(exc))
-            except Exception as exc:
-                messagebox.showerror("Error al procesar la venta", str(exc))
 
-        e_cod.bind("<Return>", cobrar)
+                messagebox.showinfo(
+                    "Ticket Exitoso",
+                    detalle_txt
+                )
+
+                e_cod.delete(
+                    0,
+                    tk.END
+                )
+
+                e_cant.delete(
+                    0,
+                    tk.END
+                )
+
+                e_cant.insert(
+                    0,
+                    "1"
+                )
+
+                e_cod.focus()
+
+            except ValueError as exc:
+
+                messagebox.showerror(
+                    "Error",
+                    str(exc)
+                )
+
+            except Exception as exc:
+
+                messagebox.showerror(
+                    "Error al procesar la venta",
+                    str(exc)
+                )
+
+        e_cod.bind(
+            "<Return>",
+            cobrar
+        )
 
         tk.Button(
             parent,
@@ -230,49 +670,1609 @@ class MainWindow(tk.Tk):
             font=("Segoe UI", 10, "bold"),
             cursor="hand2",
             command=cobrar,
-        ).pack(pady=20)
+        ).pack(
+            pady=20
+        )
+
+    # ==========================================================
+    # ARQUEO Y CIERRE DE CAJA
+    # ==========================================================
+
+    def construir_pestana_arqueo(self, parent):
+
+        # ------------------------------------------------------
+        # VARIABLES
+        # ------------------------------------------------------
+
+        fondo_var = tk.StringVar(
+            value="$0.00"
+        )
+
+        efectivo_var = tk.StringVar(
+            value="$0.00"
+        )
+
+        transferencia_var = tk.StringVar(
+            value="$0.00"
+        )
+
+        retiros_var = tk.StringVar(
+            value="$0.00"
+        )
+
+        total_var = tk.StringVar(
+            value="$0.00"
+        )
+
+        teorico_var = tk.StringVar(
+            value="$0.00"
+        )
+
+        real_var = tk.StringVar(
+            value="$0.00"
+        )
+
+        diferencia_var = tk.StringVar(
+            value="$0.00"
+        )
+
+        estado_var = tk.StringVar(
+            value="Ingrese el efectivo contado."
+        )
+
+        # ------------------------------------------------------
+        # ENCABEZADO
+        # ------------------------------------------------------
+
+        tk.Label(
+            parent,
+            text="Arqueo y Cierre de Caja",
+            font=("Segoe UI", 17, "bold"),
+            bg=self.BG_COLOR,
+            fg=self.PRIMARY
+        ).pack(
+            pady=(16, 2)
+        )
+
+        tk.Label(
+            parent,
+            text=(
+                "Controle la recaudación, retiros y efectivo "
+                "físico antes de finalizar el turno."
+            ),
+            font=("Segoe UI", 9),
+            bg=self.BG_COLOR,
+            fg=self.TEXT_MUTED
+        ).pack(
+            pady=(0, 12)
+        )
+
+        # ------------------------------------------------------
+        # APERTURA
+        # ------------------------------------------------------
+
+        f_apertura = ttk.LabelFrame(
+            parent,
+            text=" Apertura de Caja ",
+            padding=15
+        )
+
+        f_apertura.pack(
+            fill="x",
+            padx=20,
+            pady=6
+        )
+
+        ttk.Label(
+            f_apertura,
+            text="Fondo inicial:"
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=5
+        )
+
+        e_fondo = ttk.Entry(
+            f_apertura,
+            width=18,
+            font=("Segoe UI", 10)
+        )
+
+        e_fondo.insert(
+            0,
+            "0.00"
+        )
+
+        e_fondo.grid(
+            row=0,
+            column=1,
+            padx=10
+        )
+
+        # ------------------------------------------------------
+        # FUNCIONES DE CAJA
+        # ------------------------------------------------------
+
+        def convertir_monto(valor):
+
+            valor = str(valor).strip()
+
+            if not valor:
+                return 0.0
+
+            valor = valor.replace(
+                ",",
+                "."
+            )
+
+            monto = float(valor)
+
+            if monto < 0:
+
+                raise ValueError(
+                    "El importe no puede ser negativo."
+                )
+
+            return monto
+
+        def ahora():
+
+            return datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+
+        def obtener_caja_abierta():
+
+            try:
+
+                with DatabaseConnection.conectar() as conn:
+
+                    row = conn.execute(
+                        """
+                        SELECT
+                            id,
+                            fondo_inicial
+                        FROM arqueos_caja
+                        WHERE usuario = ?
+                        AND estado = 'ABIERTO'
+                        ORDER BY id DESC
+                        LIMIT 1
+                        """,
+                        (
+                            self.usuario,
+                        )
+                    ).fetchone()
+
+                    return row
+
+            except Exception:
+
+                return None
+
+        # ------------------------------------------------------
+        # TARJETAS
+        # ------------------------------------------------------
+
+        f_resumen = tk.Frame(
+            parent,
+            bg=self.BG_COLOR
+        )
+
+        f_resumen.pack(
+            fill="x",
+            padx=20,
+            pady=8
+        )
+
+        def crear_tarjeta(
+            titulo,
+            variable,
+            color=None
+        ):
+
+            frame = tk.Frame(
+                f_resumen,
+                bg=self.CARD_BG,
+                highlightbackground=self.BORDER_COLOR,
+                highlightthickness=1
+            )
+
+            frame.pack(
+                side="left",
+                fill="both",
+                expand=True,
+                padx=4
+            )
+
+            tk.Label(
+                frame,
+                text=titulo,
+                font=("Segoe UI", 8, "bold"),
+                bg=self.CARD_BG,
+                fg=self.TEXT_MUTED
+            ).pack(
+                pady=(10, 2)
+            )
+
+            tk.Label(
+                frame,
+                textvariable=variable,
+                font=("Segoe UI", 14, "bold"),
+                bg=self.CARD_BG,
+                fg=color or self.PRIMARY
+            ).pack(
+                pady=(0, 10)
+            )
+
+        crear_tarjeta(
+            "FONDO INICIAL",
+            fondo_var
+        )
+
+        crear_tarjeta(
+            "EFECTIVO",
+            efectivo_var,
+            self.SUCCESS
+        )
+
+        crear_tarjeta(
+            "TRANSFERENCIAS",
+            transferencia_var,
+            self.ACCENT
+        )
+
+        crear_tarjeta(
+            "RETIROS",
+            retiros_var,
+            self.DANGER
+        )
+
+        crear_tarjeta(
+            "TOTAL RECAUDADO",
+            total_var,
+            self.PRIMARY
+        )
+
+        # ------------------------------------------------------
+        # CUERPO
+        # ------------------------------------------------------
+
+        f_cuerpo = tk.Frame(
+            parent,
+            bg=self.BG_COLOR
+        )
+
+        f_cuerpo.pack(
+            fill="both",
+            expand=True,
+            padx=20,
+            pady=6
+        )
+
+        # ------------------------------------------------------
+        # RETIROS
+        # ------------------------------------------------------
+
+        f_retiros = ttk.LabelFrame(
+            f_cuerpo,
+            text=" Retiros de Caja ",
+            padding=12
+        )
+
+        f_retiros.pack(
+            side="left",
+            fill="both",
+            expand=True,
+            padx=(0, 8)
+        )
+
+        ttk.Label(
+            f_retiros,
+            text="Monto:"
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=5
+        )
+
+        e_retiro = ttk.Entry(
+            f_retiros,
+            width=15
+        )
+
+        e_retiro.grid(
+            row=0,
+            column=1,
+            padx=8,
+            pady=5
+        )
+
+        ttk.Label(
+            f_retiros,
+            text="Motivo:"
+        ).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=5
+        )
+
+        e_motivo = ttk.Entry(
+            f_retiros,
+            width=28
+        )
+
+        e_motivo.grid(
+            row=1,
+            column=1,
+            padx=8,
+            pady=5
+        )
+
+        columnas_retiros = (
+            "Fecha",
+            "Monto",
+            "Motivo"
+        )
+
+        tree_retiros = ttk.Treeview(
+            f_retiros,
+            columns=columnas_retiros,
+            show="headings",
+            height=7
+        )
+
+        for columna in columnas_retiros:
+
+            tree_retiros.heading(
+                columna,
+                text=columna
+            )
+
+        tree_retiros.column(
+            "Fecha",
+            width=130,
+            anchor="center"
+        )
+
+        tree_retiros.column(
+            "Monto",
+            width=90,
+            anchor="center"
+        )
+
+        tree_retiros.column(
+            "Motivo",
+            width=180,
+            anchor="w"
+        )
+
+        tree_retiros.grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            pady=10,
+            sticky="nsew"
+        )
+
+        # ------------------------------------------------------
+        # ARQUEO
+        # ------------------------------------------------------
+
+        f_arqueo = ttk.LabelFrame(
+            f_cuerpo,
+            text=" Conteo Físico y Diferencia ",
+            padding=15
+        )
+
+        f_arqueo.pack(
+            side="right",
+            fill="both",
+            expand=True,
+            padx=(8, 0)
+        )
+
+        ttk.Label(
+            f_arqueo,
+            text="Efectivo teórico:"
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=8
+        )
+
+        tk.Label(
+            f_arqueo,
+            textvariable=teorico_var,
+            font=("Segoe UI", 12, "bold"),
+            bg=self.CARD_BG,
+            fg=self.PRIMARY
+        ).grid(
+            row=0,
+            column=1,
+            sticky="e",
+            pady=8
+        )
+
+        ttk.Label(
+            f_arqueo,
+            text="Efectivo físico contado:"
+        ).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=8
+        )
+
+        e_efectivo_real = ttk.Entry(
+            f_arqueo,
+            width=18,
+            font=("Segoe UI", 11)
+        )
+
+        e_efectivo_real.grid(
+            row=1,
+            column=1,
+            padx=10,
+            pady=8
+        )
+
+        ttk.Label(
+            f_arqueo,
+            text="Diferencia:"
+        ).grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=10
+        )
+
+        lbl_diferencia = tk.Label(
+            f_arqueo,
+            textvariable=diferencia_var,
+            font=("Segoe UI", 17, "bold"),
+            bg=self.CARD_BG,
+            fg=self.TEXT_MUTED
+        )
+
+        lbl_diferencia.grid(
+            row=2,
+            column=1,
+            sticky="e",
+            pady=10
+        )
+
+        tk.Label(
+            f_arqueo,
+            textvariable=estado_var,
+            font=("Segoe UI", 9, "bold"),
+            bg=self.CARD_BG,
+            fg=self.TEXT_MUTED,
+            wraplength=260,
+            justify="center"
+        ).grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            pady=8
+        )
+
+        # ------------------------------------------------------
+        # OBTENER RETIROS
+        # ------------------------------------------------------
+
+        def obtener_total_retiros():
+
+            if not self._caja_id:
+                return 0.0
+
+            try:
+
+                with DatabaseConnection.conectar() as conn:
+
+                    row = conn.execute(
+                        """
+                        SELECT
+                            COALESCE(SUM(monto), 0)
+                        FROM retiros_caja
+                        WHERE arqueo_id = ?
+                        """,
+                        (
+                            self._caja_id,
+                        )
+                    ).fetchone()
+
+                    return float(
+                        row[0] or 0
+                    )
+
+            except Exception:
+
+                return 0.0
+
+        # ------------------------------------------------------
+        # CARGAR RETIROS
+        # ------------------------------------------------------
+
+        def cargar_retiros():
+
+            for item in tree_retiros.get_children():
+
+                tree_retiros.delete(
+                    item
+                )
+
+            if not self._caja_id:
+                return
+
+            try:
+
+                with DatabaseConnection.conectar() as conn:
+
+                    rows = conn.execute(
+                        """
+                        SELECT
+                            fecha,
+                            monto,
+                            motivo
+                        FROM retiros_caja
+                        WHERE arqueo_id = ?
+                        ORDER BY id DESC
+                        """,
+                        (
+                            self._caja_id,
+                        )
+                    ).fetchall()
+
+                for fecha, monto, motivo in rows:
+
+                    tree_retiros.insert(
+                        "",
+                        tk.END,
+                        values=(
+                            fecha,
+                            f"${float(monto):.2f}",
+                            motivo
+                        )
+                    )
+
+            except Exception as exc:
+
+                messagebox.showerror(
+                    "Error",
+                    (
+                        "No se pudieron cargar "
+                        f"los retiros:\n{exc}"
+                    )
+                )
+
+        # ------------------------------------------------------
+        # OBTENER RECAUDACIÓN
+        # ------------------------------------------------------
+
+        def obtener_recaudacion():
+
+            """
+            IMPORTANTE:
+
+            El main_window.py proporcionado no contiene
+            el esquema interno de ventas.
+
+            Por seguridad NO se inventan columnas ni tablas.
+
+            Mientras SalesService no exponga los importes
+            separados por medio de pago, estos valores quedan
+            en cero.
+
+            La conexión correcta debe hacerse en
+            SalesService/repositorio de ventas.
+            """
+
+            return {
+                "efectivo": 0.0,
+                "transferencias": 0.0,
+            }
+
+        # ------------------------------------------------------
+        # ACTUALIZAR RESUMEN
+        # ------------------------------------------------------
+
+        def actualizar_resumen():
+
+            try:
+
+                fondo = float(
+                    self._caja_fondo_inicial
+                )
+
+                recaudacion = (
+                    obtener_recaudacion()
+                )
+
+                efectivo = float(
+                    recaudacion["efectivo"]
+                )
+
+                transferencias = float(
+                    recaudacion["transferencias"]
+                )
+
+                retiros = (
+                    obtener_total_retiros()
+                )
+
+                efectivo_teorico = (
+                    fondo
+                    + efectivo
+                    - retiros
+                )
+
+                total_recaudado = (
+                    efectivo
+                    + transferencias
+                )
+
+                fondo_var.set(
+                    f"${fondo:.2f}"
+                )
+
+                efectivo_var.set(
+                    f"${efectivo:.2f}"
+                )
+
+                transferencia_var.set(
+                    f"${transferencias:.2f}"
+                )
+
+                retiros_var.set(
+                    f"${retiros:.2f}"
+                )
+
+                total_var.set(
+                    f"${total_recaudado:.2f}"
+                )
+
+                teorico_var.set(
+                    f"${efectivo_teorico:.2f}"
+                )
+
+                try:
+
+                    efectivo_real = convertir_monto(
+                        e_efectivo_real.get()
+                    )
+
+                    real_var.set(
+                        f"${efectivo_real:.2f}"
+                    )
+
+                    diferencia = (
+                        efectivo_real
+                        - efectivo_teorico
+                    )
+
+                    diferencia_var.set(
+                        f"${diferencia:+.2f}"
+                    )
+
+                    if diferencia > 0.009:
+
+                        lbl_diferencia.config(
+                            fg=self.SUCCESS
+                        )
+
+                        estado_var.set(
+                            "✓ Existe un SOBRANTE de caja."
+                        )
+
+                    elif diferencia < -0.009:
+
+                        lbl_diferencia.config(
+                            fg=self.DANGER
+                        )
+
+                        estado_var.set(
+                            "⚠ Existe un FALTANTE de caja."
+                        )
+
+                    else:
+
+                        lbl_diferencia.config(
+                            fg=self.SUCCESS
+                        )
+
+                        estado_var.set(
+                            "✓ CAJA CUADRADA correctamente."
+                        )
+
+                except ValueError:
+
+                    real_var.set(
+                        "$0.00"
+                    )
+
+                    diferencia_var.set(
+                        "$0.00"
+                    )
+
+                    lbl_diferencia.config(
+                        fg=self.TEXT_MUTED
+                    )
+
+                    estado_var.set(
+                        "Ingrese el efectivo contado."
+                    )
+
+            except Exception as exc:
+
+                messagebox.showerror(
+                    "Error",
+                    (
+                        "No se pudo actualizar "
+                        f"el resumen:\n{exc}"
+                    )
+                )
+
+        # ------------------------------------------------------
+        # ABRIR CAJA
+        # ------------------------------------------------------
+
+        def abrir_caja():
+
+            try:
+
+                fondo = convertir_monto(
+                    e_fondo.get()
+                )
+
+                existente = (
+                    obtener_caja_abierta()
+                )
+
+                if existente:
+
+                    self._caja_id = existente[0]
+
+                    self._caja_fondo_inicial = float(
+                        existente[1]
+                    )
+
+                    self._caja_abierta = True
+
+                    e_fondo.delete(
+                        0,
+                        tk.END
+                    )
+
+                    e_fondo.insert(
+                        0,
+                        f"{self._caja_fondo_inicial:.2f}"
+                    )
+
+                    cargar_retiros()
+                    actualizar_resumen()
+
+                    messagebox.showinfo(
+                        "Caja abierta",
+                        (
+                            "Se recuperó la sesión "
+                            "de caja abierta."
+                        )
+                    )
+
+                    return
+
+                with DatabaseConnection.conectar() as conn:
+
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO arqueos_caja (
+                            usuario,
+                            fecha_apertura,
+                            fondo_inicial,
+                            estado
+                        )
+                        VALUES (?, ?, ?, 'ABIERTO')
+                        """,
+                        (
+                            self.usuario,
+                            ahora(),
+                            fondo
+                        )
+                    )
+
+                    self._caja_id = cursor.lastrowid
+
+                    conn.commit()
+
+                self._caja_abierta = True
+                self._caja_fondo_inicial = fondo
+
+                actualizar_resumen()
+
+                messagebox.showinfo(
+                    "Caja abierta",
+                    (
+                        "Caja abierta correctamente.\n\n"
+                        f"Fondo inicial: ${fondo:.2f}"
+                    )
+                )
+
+            except ValueError as exc:
+
+                messagebox.showerror(
+                    "Importe inválido",
+                    str(exc)
+                )
+
+            except Exception as exc:
+
+                messagebox.showerror(
+                    "Error",
+                    (
+                        "No se pudo abrir "
+                        f"la caja:\n{exc}"
+                    )
+                )
+
+        btn_abrir = tk.Button(
+            f_apertura,
+            text="🔓 Abrir / Recuperar Caja",
+            bg=self.ACCENT,
+            fg="white",
+            relief="flat",
+            padx=14,
+            pady=6,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=abrir_caja
+        )
+
+        btn_abrir.grid(
+            row=0,
+            column=2,
+            padx=10
+        )
+
+        # ------------------------------------------------------
+        # REGISTRAR RETIRO
+        # ------------------------------------------------------
+
+        def registrar_retiro():
+
+            try:
+
+                if not self._caja_abierta:
+
+                    messagebox.showwarning(
+                        "Caja cerrada",
+                        (
+                            "Primero debe abrir "
+                            "una caja."
+                        )
+                    )
+
+                    return
+
+                monto = convertir_monto(
+                    e_retiro.get()
+                )
+
+                if monto <= 0:
+
+                    raise ValueError(
+                        "El retiro debe ser mayor a cero."
+                    )
+
+                motivo = (
+                    e_motivo.get().strip()
+                )
+
+                if not motivo:
+
+                    raise ValueError(
+                        "Debe indicar el motivo del retiro."
+                    )
+
+                with DatabaseConnection.conectar() as conn:
+
+                    conn.execute(
+                        """
+                        INSERT INTO retiros_caja (
+                            arqueo_id,
+                            usuario,
+                            fecha,
+                            monto,
+                            motivo
+                        )
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            self._caja_id,
+                            self.usuario,
+                            ahora(),
+                            monto,
+                            motivo
+                        )
+                    )
+
+                    conn.commit()
+
+                e_retiro.delete(
+                    0,
+                    tk.END
+                )
+
+                e_motivo.delete(
+                    0,
+                    tk.END
+                )
+
+                cargar_retiros()
+                actualizar_resumen()
+
+            except ValueError as exc:
+
+                messagebox.showerror(
+                    "Retiro inválido",
+                    str(exc)
+                )
+
+            except Exception as exc:
+
+                messagebox.showerror(
+                    "Error",
+                    (
+                        "No se pudo registrar "
+                        f"el retiro:\n{exc}"
+                    )
+                )
+
+        btn_retiro = tk.Button(
+            f_retiros,
+            text="💸 Registrar Retiro",
+            bg=self.DANGER,
+            fg="white",
+            relief="flat",
+            padx=12,
+            pady=6,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=registrar_retiro
+        )
+
+        btn_retiro.grid(
+            row=2,
+            column=0,
+            columnspan=2,
+            pady=8
+        )
+
+        f_retiros.columnconfigure(
+            1,
+            weight=1
+        )
+
+        f_retiros.rowconfigure(
+            3,
+            weight=1
+        )
+
+        # ------------------------------------------------------
+        # ACTUALIZACIÓN EN TIEMPO REAL
+        # ------------------------------------------------------
+
+        e_efectivo_real.bind(
+            "<KeyRelease>",
+            lambda _event: actualizar_resumen()
+        )
+
+        # ------------------------------------------------------
+        # RESUMEN
+        # ------------------------------------------------------
+
+        def mostrar_resumen():
+
+            try:
+
+                recaudacion = (
+                    obtener_recaudacion()
+                )
+
+                efectivo = float(
+                    recaudacion["efectivo"]
+                )
+
+                transferencia = float(
+                    recaudacion["transferencias"]
+                )
+
+                retiros = (
+                    obtener_total_retiros()
+                )
+
+                fondo = float(
+                    self._caja_fondo_inicial
+                )
+
+                efectivo_teorico = (
+                    fondo
+                    + efectivo
+                    - retiros
+                )
+
+                efectivo_real = convertir_monto(
+                    e_efectivo_real.get()
+                )
+
+                diferencia = (
+                    efectivo_real
+                    - efectivo_teorico
+                )
+
+                total_recaudado = (
+                    efectivo
+                    + transferencia
+                )
+
+                if diferencia > 0.009:
+
+                    estado = (
+                        f"SOBRANTE "
+                        f"${diferencia:.2f}"
+                    )
+
+                elif diferencia < -0.009:
+
+                    estado = (
+                        f"FALTANTE "
+                        f"${abs(diferencia):.2f}"
+                    )
+
+                else:
+
+                    estado = "CAJA CUADRADA"
+
+                resumen = f"""
+╔════════════════════════════════════════════╗
+║          RESUMEN DE CIERRE DE CAJA         ║
+╚════════════════════════════════════════════╝
+
+Usuario:
+{self.usuario}
+
+Fecha:
+{ahora()}
+
+──────────────────────────────────────────────
+
+FONDO INICIAL
+${fondo:.2f}
+
+RECAUDACIÓN
+
+  Efectivo:                 ${efectivo:.2f}
+  Transferencias:           ${transferencia:.2f}
+
+  TOTAL RECAUDADO:          ${total_recaudado:.2f}
+
+──────────────────────────────────────────────
+
+RETIROS
+
+  Total retiros:            ${retiros:.2f}
+
+──────────────────────────────────────────────
+
+ARQUEO
+
+  Efectivo teórico:         ${efectivo_teorico:.2f}
+  Efectivo físico:          ${efectivo_real:.2f}
+
+  DIFERENCIA:               ${diferencia:+.2f}
+
+  >>> {estado} <<<
+
+──────────────────────────────────────────────
+"""
+
+                ventana = tk.Toplevel(
+                    self
+                )
+
+                ventana.title(
+                    "Resumen de Cierre de Caja"
+                )
+
+                ventana.geometry(
+                    "650x650"
+                )
+
+                ventana.configure(
+                    bg=self.BG_COLOR
+                )
+
+                ventana.transient(
+                    self
+                )
+
+                tk.Label(
+                    ventana,
+                    text="📋 Resumen de Caja",
+                    font=("Segoe UI", 16, "bold"),
+                    bg=self.BG_COLOR,
+                    fg=self.PRIMARY
+                ).pack(
+                    pady=12
+                )
+
+                text = tk.Text(
+                    ventana,
+                    font=("Consolas", 10),
+                    bg="#FFFFFF",
+                    fg=self.TEXT_MAIN,
+                    relief="solid",
+                    borderwidth=1,
+                    padx=15,
+                    pady=15,
+                    wrap="none"
+                )
+
+                text.pack(
+                    fill="both",
+                    expand=True,
+                    padx=20,
+                    pady=5
+                )
+
+                text.insert(
+                    "1.0",
+                    resumen
+                )
+
+                text.config(
+                    state="disabled"
+                )
+
+                tk.Button(
+                    ventana,
+                    text="Cerrar",
+                    bg=self.ACCENT,
+                    fg="white",
+                    relief="flat",
+                    padx=20,
+                    pady=8,
+                    font=("Segoe UI", 9, "bold"),
+                    cursor="hand2",
+                    command=ventana.destroy
+                ).pack(
+                    pady=12
+                )
+
+            except ValueError:
+
+                messagebox.showwarning(
+                    "Arqueo incompleto",
+                    (
+                        "Ingrese el efectivo "
+                        "físico contado."
+                    )
+                )
+
+            except Exception as exc:
+
+                messagebox.showerror(
+                    "Error",
+                    (
+                        "No se pudo generar "
+                        f"el resumen:\n{exc}"
+                    )
+                )
+
+        # ------------------------------------------------------
+        # CERRAR CAJA
+        # ------------------------------------------------------
+
+        def cerrar_caja():
+
+            try:
+
+                if not self._caja_id:
+
+                    messagebox.showwarning(
+                        "Caja no abierta",
+                        (
+                            "No existe una sesión "
+                            "de caja abierta."
+                        )
+                    )
+
+                    return
+
+                efectivo_real = convertir_monto(
+                    e_efectivo_real.get()
+                )
+
+                recaudacion = (
+                    obtener_recaudacion()
+                )
+
+                efectivo = float(
+                    recaudacion["efectivo"]
+                )
+
+                transferencia = float(
+                    recaudacion["transferencias"]
+                )
+
+                retiros = (
+                    obtener_total_retiros()
+                )
+
+                fondo = float(
+                    self._caja_fondo_inicial
+                )
+
+                efectivo_teorico = (
+                    fondo
+                    + efectivo
+                    - retiros
+                )
+
+                diferencia = (
+                    efectivo_real
+                    - efectivo_teorico
+                )
+
+                total_recaudado = (
+                    efectivo
+                    + transferencia
+                )
+
+                confirmar = messagebox.askyesno(
+                    "Confirmar cierre",
+                    (
+                        "¿Está seguro de cerrar esta caja?\n\n"
+                        f"Efectivo teórico: "
+                        f"${efectivo_teorico:.2f}\n"
+                        f"Efectivo contado: "
+                        f"${efectivo_real:.2f}\n"
+                        f"Diferencia: "
+                        f"${diferencia:+.2f}\n\n"
+                        "Esta operación quedará registrada."
+                    )
+                )
+
+                if not confirmar:
+                    return
+
+                with DatabaseConnection.conectar() as conn:
+
+                    conn.execute(
+                        """
+                        UPDATE arqueos_caja
+                        SET
+                            fecha_cierre = ?,
+                            efectivo_teorico = ?,
+                            efectivo_real = ?,
+                            transferencias = ?,
+                            total_recaudado = ?,
+                            total_retiros = ?,
+                            diferencia = ?,
+                            estado = 'CERRADO'
+                        WHERE id = ?
+                        """,
+                        (
+                            ahora(),
+                            efectivo_teorico,
+                            efectivo_real,
+                            transferencia,
+                            total_recaudado,
+                            retiros,
+                            diferencia,
+                            self._caja_id
+                        )
+                    )
+
+                    conn.commit()
+
+                mostrar_resumen()
+
+                messagebox.showinfo(
+                    "Caja cerrada",
+                    (
+                        "El cierre de caja fue "
+                        "registrado correctamente."
+                    )
+                )
+
+                self._caja_abierta = False
+
+                btn_cerrar.config(
+                    state="disabled"
+                )
+
+                btn_retiro.config(
+                    state="disabled"
+                )
+
+                btn_abrir.config(
+                    state="disabled"
+                )
+
+            except ValueError as exc:
+
+                messagebox.showerror(
+                    "Arqueo inválido",
+                    str(exc)
+                )
+
+            except Exception as exc:
+
+                messagebox.showerror(
+                    "Error al cerrar caja",
+                    str(exc)
+                )
+
+        # ------------------------------------------------------
+        # BOTONES INFERIORES
+        # ------------------------------------------------------
+
+        f_botones = tk.Frame(
+            parent,
+            bg=self.BG_COLOR
+        )
+
+        f_botones.pack(
+            fill="x",
+            padx=20,
+            pady=12
+        )
+
+        tk.Button(
+            f_botones,
+            text="🔄 Actualizar Recaudación",
+            bg=self.ACCENT,
+            fg="white",
+            relief="flat",
+            padx=14,
+            pady=8,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=actualizar_resumen
+        ).pack(
+            side="left",
+            padx=4
+        )
+
+        tk.Button(
+            f_botones,
+            text="📋 Ver Resumen",
+            bg=self.PURPLE,
+            fg="white",
+            relief="flat",
+            padx=14,
+            pady=8,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=mostrar_resumen
+        ).pack(
+            side="left",
+            padx=4
+        )
+
+        btn_cerrar = tk.Button(
+            f_botones,
+            text="🔒 Cerrar Caja",
+            bg=self.DANGER,
+            fg="white",
+            relief="flat",
+            padx=18,
+            pady=8,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=cerrar_caja
+        )
+
+        btn_cerrar.pack(
+            side="right",
+            padx=4
+        )
+
+        # ------------------------------------------------------
+        # RECUPERAR CAJA ABIERTA
+        # ------------------------------------------------------
+
+        existente = obtener_caja_abierta()
+
+        if existente:
+
+            self._caja_id = existente[0]
+
+            self._caja_fondo_inicial = float(
+                existente[1]
+            )
+
+            self._caja_abierta = True
+
+            e_fondo.delete(
+                0,
+                tk.END
+            )
+
+            e_fondo.insert(
+                0,
+                f"{self._caja_fondo_inicial:.2f}"
+            )
+
+            cargar_retiros()
+            actualizar_resumen()
+
+        else:
+
+            btn_cerrar.config(
+                state="disabled"
+            )
+
+            btn_retiro.config(
+                state="disabled"
+            )
+
+    # ==========================================================
+    # INVENTARIO
+    # ==========================================================
 
     def construir_pestana_inventario(self, parent):
+
         tk.Label(
             parent,
             text="Gestión Integral de Inventario",
             font=("Segoe UI", 15, "bold"),
             bg=self.BG_COLOR,
             fg=self.PRIMARY
-        ).pack(pady=10)
+        ).pack(
+            pady=10
+        )
 
-        f_nuevo = ttk.LabelFrame(parent, text=" ➕ Registrar Nuevo Producto ", padding=12)
-        f_nuevo.pack(fill="x", padx=16, pady=6)
+        f_nuevo = ttk.LabelFrame(
+            parent,
+            text=" ➕ Registrar Nuevo Producto ",
+            padding=12
+        )
 
-        ttk.Label(f_nuevo, text="Código:").grid(row=0, column=0, sticky="w", padx=4)
-        e_n_cod = ttk.Entry(f_nuevo, width=12)
-        e_n_cod.grid(row=0, column=1, padx=4)
-        
-        ttk.Label(f_nuevo, text="Nombre:").grid(row=0, column=2, sticky="w", padx=4)
-        e_n_nom = ttk.Entry(f_nuevo, width=16)
-        e_n_nom.grid(row=0, column=3, padx=4)
-        
-        ttk.Label(f_nuevo, text="Cantidad:").grid(row=0, column=4, sticky="w", padx=4)
-        e_n_cant = ttk.Entry(f_nuevo, width=8)
-        e_n_cant.grid(row=0, column=5, padx=4)
-        
-        ttk.Label(f_nuevo, text="Precio ($):").grid(row=0, column=6, sticky="w", padx=4)
-        e_n_precio = ttk.Entry(f_nuevo, width=10)
-        e_n_precio.grid(row=0, column=7, padx=4)
+        f_nuevo.pack(
+            fill="x",
+            padx=16,
+            pady=6
+        )
+
+        ttk.Label(
+            f_nuevo,
+            text="Código:"
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=4
+        )
+
+        e_n_cod = ttk.Entry(
+            f_nuevo,
+            width=12
+        )
+
+        e_n_cod.grid(
+            row=0,
+            column=1,
+            padx=4
+        )
+
+        ttk.Label(
+            f_nuevo,
+            text="Nombre:"
+        ).grid(
+            row=0,
+            column=2,
+            sticky="w",
+            padx=4
+        )
+
+        e_n_nom = ttk.Entry(
+            f_nuevo,
+            width=16
+        )
+
+        e_n_nom.grid(
+            row=0,
+            column=3,
+            padx=4
+        )
+
+        ttk.Label(
+            f_nuevo,
+            text="Cantidad:"
+        ).grid(
+            row=0,
+            column=4,
+            sticky="w",
+            padx=4
+        )
+
+        e_n_cant = ttk.Entry(
+            f_nuevo,
+            width=8
+        )
+
+        e_n_cant.grid(
+            row=0,
+            column=5,
+            padx=4
+        )
+
+        ttk.Label(
+            f_nuevo,
+            text="Precio ($):"
+        ).grid(
+            row=0,
+            column=6,
+            sticky="w",
+            padx=4
+        )
+
+        e_n_precio = ttk.Entry(
+            f_nuevo,
+            width=10
+        )
+
+        e_n_precio.grid(
+            row=0,
+            column=7,
+            padx=4
+        )
 
         def registrar_nuevo_producto():
+
             try:
+
                 codigo = e_n_cod.get().strip()
                 nombre = e_n_nom.get().strip()
-                cantidad = int(e_n_cant.get())
-                precio_base = float(e_n_precio.get())
-                if not codigo or not nombre:
-                    messagebox.showwarning("Aviso", "Código y Nombre son obligatorios.")
-                    return
-                if cantidad < 0 or precio_base < 0:
-                    raise ValueError("Cantidad y precio no pueden ser negativos.")
+                cantidad = int(
+                    e_n_cant.get()
+                )
+                precio_base = float(
+                    e_n_precio.get()
+                )
 
-                precio_final, _ = PricingService.calcular_detallado(precio_base)
+                if not codigo or not nombre:
+
+                    messagebox.showwarning(
+                        "Aviso",
+                        (
+                            "Código y Nombre "
+                            "son obligatorios."
+                        )
+                    )
+
+                    return
+
+                if cantidad < 0 or precio_base < 0:
+
+                    raise ValueError(
+                        (
+                            "Cantidad y precio "
+                            "no pueden ser negativos."
+                        )
+                    )
+
+                precio_final, _ = (
+                    PricingService.calcular_detallado(
+                        precio_base
+                    )
+                )
+
                 nuevo_art = Articulo(
                     codigo=codigo,
                     nombre=nombre,
@@ -281,16 +2281,48 @@ class MainWindow(tk.Tk):
                     precio_final=precio_final,
                     stock_minimo=5,
                 )
-                InventarioRepository.insertar(nuevo_art)
+
+                InventarioRepository.insertar(
+                    nuevo_art
+                )
+
                 self._refresh_inventory_view()
+
                 self._refresh_faltantes_view()
-                messagebox.showinfo("Éxito", f"Producto '{nombre}' agregado correctamente.")
-                for entry in (e_n_cod, e_n_nom, e_n_cant, e_n_precio):
-                    entry.delete(0, tk.END)
+
+                messagebox.showinfo(
+                    "Éxito",
+                    (
+                        f"Producto '{nombre}' "
+                        "agregado correctamente."
+                    )
+                )
+
+                for entry in (
+                    e_n_cod,
+                    e_n_nom,
+                    e_n_cant,
+                    e_n_precio
+                ):
+
+                    entry.delete(
+                        0,
+                        tk.END
+                    )
+
             except ValueError as exc:
-                messagebox.showerror("Error", str(exc))
+
+                messagebox.showerror(
+                    "Error",
+                    str(exc)
+                )
+
             except Exception as exc:
-                messagebox.showerror("Error al guardar", str(exc))
+
+                messagebox.showerror(
+                    "Error al guardar",
+                    str(exc)
+                )
 
         tk.Button(
             f_nuevo,
@@ -303,20 +2335,81 @@ class MainWindow(tk.Tk):
             font=("Segoe UI", 9, "bold"),
             cursor="hand2",
             command=registrar_nuevo_producto,
-        ).grid(row=0, column=8, padx=12)
+        ).grid(
+            row=0,
+            column=8,
+            padx=12
+        )
+
+        # ------------------------------------------------------
+        # FILTRO
+        # ------------------------------------------------------
 
         f_filtro = ttk.Frame(parent)
-        f_filtro.pack(fill="x", padx=16, pady=6)
-        ttk.Label(f_filtro, text="Filtrar por Etiqueta:").pack(side="left", padx=4)
-        combo_filtro = ttk.Combobox(f_filtro, state="readonly", width=22)
-        combo_filtro.pack(side="left", padx=4)
 
-        columns = ("Código", "Nombre", "Stock Disponible", "Base", "Final", "Mínimo")
-        tree = ttk.Treeview(parent, columns=columns, show="headings", height=5)
+        f_filtro.pack(
+            fill="x",
+            padx=16,
+            pady=6
+        )
+
+        ttk.Label(
+            f_filtro,
+            text="Filtrar por Etiqueta:"
+        ).pack(
+            side="left",
+            padx=4
+        )
+
+        combo_filtro = ttk.Combobox(
+            f_filtro,
+            state="readonly",
+            width=22
+        )
+
+        combo_filtro.pack(
+            side="left",
+            padx=4
+        )
+
+        # ------------------------------------------------------
+        # TABLA
+        # ------------------------------------------------------
+
+        columns = (
+            "Código",
+            "Nombre",
+            "Stock Disponible",
+            "Base",
+            "Final",
+            "Mínimo"
+        )
+
+        tree = ttk.Treeview(
+            parent,
+            columns=columns,
+            show="headings",
+            height=5
+        )
+
         for col in columns:
-            tree.heading(col, text=col)
-            tree.column(col, width=120, anchor="center")
-        tree.pack(pady=4, padx=16, fill="x")
+
+            tree.heading(
+                col,
+                text=col
+            )
+
+            tree.column(
+                col,
+                width=120,
+                anchor="center"
+            )
+
+        tree.pack(
+            pady=4,
+            padx=16,
+            fill="x"
+        )
 
         lbl_sel = tk.Label(
             parent,
@@ -325,33 +2418,239 @@ class MainWindow(tk.Tk):
             bg=self.BG_COLOR,
             fg=self.ACCENT
         )
-        lbl_sel.pack(anchor="w", padx=16, pady=2)
+
+        lbl_sel.pack(
+            anchor="w",
+            padx=16,
+            pady=2
+        )
+
+        # ------------------------------------------------------
+        # INFERIOR
+        # ------------------------------------------------------
 
         f_inferior = ttk.Frame(parent)
-        f_inferior.pack(fill="x", padx=16, pady=4)
 
-        f_stock = ttk.LabelFrame(f_inferior, text=" Ajuste Rápido de Stock ", padding=10)
-        f_stock.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        f_inferior.pack(
+            fill="x",
+            padx=16,
+            pady=4
+        )
 
-        ttk.Label(f_stock, text="Cantidad:").grid(row=0, column=0, sticky="w", pady=4)
-        e_cant_stock = ttk.Entry(f_stock, width=12)
-        e_cant_stock.grid(row=0, column=1, padx=6, pady=4)
+        f_stock = ttk.LabelFrame(
+            f_inferior,
+            text=" Ajuste Rápido de Stock ",
+            padding=10
+        )
 
-        def actualizar_tabla(etiqueta=None, silencioso=False, codigo_seleccionado=None):
-            etiqueta = etiqueta if etiqueta is not None else combo_filtro.get() or "Todas"
+        f_stock.pack(
+            side="left",
+            fill="both",
+            expand=True,
+            padx=(0, 8)
+        )
+
+        ttk.Label(
+            f_stock,
+            text="Cantidad:"
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        e_cant_stock = ttk.Entry(
+            f_stock,
+            width=12
+        )
+
+        e_cant_stock.grid(
+            row=0,
+            column=1,
+            padx=6,
+            pady=4
+        )
+
+        # ------------------------------------------------------
+        # HISTOGRAMA
+        # ------------------------------------------------------
+
+        f_histo = ttk.LabelFrame(
+            f_inferior,
+            text=" 📊 Histograma de Tendencia de Stock ",
+            padding=10
+        )
+
+        f_histo.pack(
+            side="right",
+            fill="both",
+            expand=True,
+            padx=(8, 0)
+        )
+
+        canvas_histo = tk.Canvas(
+            f_histo,
+            height=110,
+            bg=self.CARD_BG,
+            highlightthickness=0
+        )
+
+        canvas_histo.pack(
+            fill="both",
+            expand=True
+        )
+
+        def actualizar_histograma(
+            articulos
+        ):
+
+            canvas_histo.delete(
+                "all"
+            )
+
+            if not articulos:
+
+                canvas_histo.create_text(
+                    150,
+                    55,
+                    text=(
+                        "Sin datos de stock disponibles"
+                    ),
+                    fill=self.TEXT_MUTED
+                )
+
+                return
+
+            muestra = articulos[:7]
+
+            max_stock = max(
+                (
+                    a.cantidad
+                    for a in muestra
+                ),
+                default=10
+            )
+
+            if max_stock == 0:
+                max_stock = 1
+
+            canvas_width = 380
+
+            ancho_barra = max(
+                18,
+                (
+                    canvas_width - 30
+                ) // len(muestra)
+            )
+
+            for i, art in enumerate(muestra):
+
+                x0 = (
+                    20 +
+                    i *
+                    (
+                        ancho_barra +
+                        8
+                    )
+                )
+
+                altura_relativa = (
+                    art.cantidad /
+                    max_stock
+                ) * 70
+
+                y0 = (
+                    85 -
+                    altura_relativa
+                )
+
+                x1 = (
+                    x0 +
+                    ancho_barra
+                )
+
+                y1 = 85
+
+                color = (
+                    self.DANGER
+                    if art.cantidad <= art.stock_minimo
+                    else self.SUCCESS
+                )
+
+                canvas_histo.create_rectangle(
+                    x0,
+                    y0,
+                    x1,
+                    y1,
+                    fill=color,
+                    outline=""
+                )
+
+                canvas_histo.create_text(
+                    x0 + ancho_barra / 2,
+                    97,
+                    text=art.nombre[:5],
+                    font=("Segoe UI", 8),
+                    fill=self.TEXT_MAIN
+                )
+
+                canvas_histo.create_text(
+                    x0 + ancho_barra / 2,
+                    y0 - 8,
+                    text=str(art.cantidad),
+                    font=("Segoe UI", 8, "bold"),
+                    fill=self.TEXT_MAIN
+                )
+
+        def actualizar_tabla(
+            etiqueta=None,
+            silencioso=False,
+            codigo_seleccionado=None
+        ):
+
+            etiqueta = (
+                etiqueta
+                if etiqueta is not None
+                else combo_filtro.get()
+                or "Todas"
+            )
+
             if not tree.winfo_exists():
                 return
+
             if codigo_seleccionado is None:
+
                 sel = tree.selection()
+
                 if sel:
-                    codigo_seleccionado = str(tree.item(sel[0], "values")[0])
+
+                    codigo_seleccionado = str(
+                        tree.item(
+                            sel[0],
+                            "values"
+                        )[0]
+                    )
 
             try:
-                articulos = InventarioRepository.obtener_todos(etiqueta)
+
+                articulos = (
+                    InventarioRepository
+                    .obtener_todos(
+                        etiqueta
+                    )
+                )
+
                 for row in tree.get_children():
-                    tree.delete(row)
+
+                    tree.delete(
+                        row
+                    )
+
                 nuevo_item = None
+
                 for art in articulos:
+
                     item = tree.insert(
                         "",
                         tk.END,
@@ -364,204 +2663,710 @@ class MainWindow(tk.Tk):
                             art.stock_minimo,
                         ),
                     )
-                    if art.codigo == codigo_seleccionado:
+
+                    if (
+                        art.codigo ==
+                        codigo_seleccionado
+                    ):
+
                         nuevo_item = item
+
                 if nuevo_item:
-                    tree.selection_set(nuevo_item)
-                    tree.focus(nuevo_item)
-                    seleccionar_item(None)
+
+                    tree.selection_set(
+                        nuevo_item
+                    )
+
+                    tree.focus(
+                        nuevo_item
+                    )
+
+                    seleccionar_item(
+                        None
+                    )
+
                 else:
-                    lbl_sel.config(text="Producto seleccionado: Ninguno")
-                
-                actualizar_histograma(articulos)
-            except Exception as exc:
-                if not silencioso:
-                    messagebox.showerror("Error", f"No se pudo actualizar inventario: {exc}")
 
-        f_histo = ttk.LabelFrame(f_inferior, text=" 📊 Histograma de Tendencia de Stock ", padding=10)
-        f_histo.pack(side="right", fill="both", expand=True, padx=(8, 0))
-        
-        canvas_histo = tk.Canvas(f_histo, height=110, bg=self.CARD_BG, highlightthickness=0)
-        canvas_histo.pack(fill="both", expand=True)
+                    lbl_sel.config(
+                        text=(
+                            "Producto seleccionado: "
+                            "Ninguno"
+                        )
+                    )
 
-        def actualizar_histograma(articulos):
-            canvas_histo.delete("all")
-            if not articulos:
-                canvas_histo.create_text(150, 55, text="Sin datos de stock disponibles", fill=self.TEXT_MUTED)
-                return
-            
-            MUESTRA = articulos[:7]
-            max_stock = max((a.cantidad for a in MUESTRA), default=10)
-            if max_stock == 0:
-                max_stock = 1
-
-            canvas_width = 380
-            ancho_barra = max(18, (canvas_width - 30) // len(MUESTRA))
-            
-            for i, art in enumerate(MUESTRA):
-                x0 = 20 + i * (ancho_barra + 8)
-                altura_relativa = (art.cantidad / max_stock) * 70
-                y0 = 85 - altura_relativa
-                x1 = x0 + ancho_barra
-                y1 = 85
-                
-                color = self.DANGER if art.cantidad <= art.stock_minimo else self.SUCCESS
-                
-                canvas_histo.create_rectangle(x0, y0, x1, y1, fill=color, outline="")
-                canvas_histo.create_text(x0 + ancho_barra/2, 97, text=art.nombre[:5], font=("Segoe UI", 8), fill=self.TEXT_MAIN)
-                canvas_histo.create_text(x0 + ancho_barra/2, y0 - 8, text=str(art.cantidad), font=("Segoe UI", 8, "bold"), fill=self.TEXT_MAIN)
-
-        def actualizar_etiquetas_combo(silencioso=False):
-            try:
-                etiquetas = InventarioRepository.obtener_etiquetas()
-                valores = ["Todas"] + etiquetas
-                actual = combo_filtro.get()
-                combo_filtro["values"] = valores
-                combo_filtro.set(actual if actual in valores else "Todas")
-            except Exception as exc:
-                combo_filtro["values"] = ["Todas"]
-                combo_filtro.set("Todas")
-                if not silencioso:
-                    messagebox.showerror("Error", f"No se pudieron cargar las etiquetas: {exc}")
-
-        def seleccionar_item(_event):
-            sel = tree.selection()
-            if sel:
-                vals = tree.item(sel[0], "values")
-                lbl_sel.config(
-                    text=f"Seleccionado: [{vals[0]}] {vals[1]} | Stock actual: {vals[2]}"
+                actualizar_histograma(
+                    articulos
                 )
-            else:
-                lbl_sel.config(text="Producto seleccionado: Ninguno")
 
-        combo_filtro.bind("<<ComboboxSelected>>", lambda _e: actualizar_tabla(combo_filtro.get()))
-        tree.bind("<<TreeviewSelect>>", seleccionar_item)
+            except Exception as exc:
+
+                if not silencioso:
+
+                    messagebox.showerror(
+                        "Error",
+                        (
+                            "No se pudo actualizar "
+                            f"inventario: {exc}"
+                        )
+                    )
+
+        def actualizar_etiquetas_combo(
+            silencioso=False
+        ):
+
+            try:
+
+                etiquetas = (
+                    InventarioRepository
+                    .obtener_etiquetas()
+                )
+
+                valores = (
+                    ["Todas"] +
+                    etiquetas
+                )
+
+                actual = (
+                    combo_filtro.get()
+                )
+
+                combo_filtro["values"] = (
+                    valores
+                )
+
+                combo_filtro.set(
+                    actual
+                    if actual in valores
+                    else "Todas"
+                )
+
+            except Exception as exc:
+
+                combo_filtro["values"] = [
+                    "Todas"
+                ]
+
+                combo_filtro.set(
+                    "Todas"
+                )
+
+                if not silencioso:
+
+                    messagebox.showerror(
+                        "Error",
+                        (
+                            "No se pudieron cargar "
+                            f"las etiquetas: {exc}"
+                        )
+                    )
+
+        def seleccionar_item(
+            _event
+        ):
+
+            sel = tree.selection()
+
+            if sel:
+
+                vals = tree.item(
+                    sel[0],
+                    "values"
+                )
+
+                lbl_sel.config(
+                    text=(
+                        f"Seleccionado: "
+                        f"[{vals[0]}] {vals[1]} "
+                        f"| Stock actual: {vals[2]}"
+                    )
+                )
+
+            else:
+
+                lbl_sel.config(
+                    text=(
+                        "Producto seleccionado: "
+                        "Ninguno"
+                    )
+                )
+
+        combo_filtro.bind(
+            "<<ComboboxSelected>>",
+            lambda _e:
+            actualizar_tabla(
+                combo_filtro.get()
+            )
+        )
+
+        tree.bind(
+            "<<TreeviewSelect>>",
+            seleccionar_item
+        )
+
+        # ------------------------------------------------------
+        # STOCK
+        # ------------------------------------------------------
 
         def operacion_stock(tipo):
+
             try:
+
                 sel = tree.selection()
+
                 if not sel:
-                    messagebox.showwarning("Aviso", "Seleccione un producto de la tabla.")
+
+                    messagebox.showwarning(
+                        "Aviso",
+                        (
+                            "Seleccione un producto "
+                            "de la tabla."
+                        )
+                    )
+
                     return
-                val = int(e_cant_stock.get())
+
+                val = int(
+                    e_cant_stock.get()
+                )
+
                 if val < 0:
-                    raise ValueError("La cantidad no puede ser negativa.")
-                codigo = str(tree.item(sel[0], "values")[0]).strip()
-                art = InventarioRepository.obtener_por_codigo(codigo)
+
+                    raise ValueError(
+                        (
+                            "La cantidad "
+                            "no puede ser negativa."
+                        )
+                    )
+
+                codigo = str(
+                    tree.item(
+                        sel[0],
+                        "values"
+                    )[0]
+                ).strip()
+
+                art = (
+                    InventarioRepository
+                    .obtener_por_codigo(
+                        codigo
+                    )
+                )
+
                 if not art:
-                    raise ValueError("El producto seleccionado ya no existe.")
+
+                    raise ValueError(
+                        (
+                            "El producto seleccionado "
+                            "ya no existe."
+                        )
+                    )
 
                 if tipo == "agregar":
-                    nuevo_total = art.cantidad + val
+
+                    nuevo_total = (
+                        art.cantidad +
+                        val
+                    )
+
                 elif tipo == "eliminar":
-                    nuevo_total = max(0, art.cantidad - val)
+
+                    nuevo_total = max(
+                        0,
+                        art.cantidad - val
+                    )
+
                 else:
+
                     nuevo_total = val
 
-                InventarioRepository.actualizar(codigo, {"cantidad": nuevo_total})
-                actualizar_tabla(combo_filtro.get(), codigo_seleccionado=codigo)
+                InventarioRepository.actualizar(
+                    codigo,
+                    {
+                        "cantidad":
+                        nuevo_total
+                    }
+                )
+
+                actualizar_tabla(
+                    combo_filtro.get(),
+                    codigo_seleccionado=codigo
+                )
+
                 self._refresh_faltantes_view()
-                e_cant_stock.delete(0, tk.END)
-                messagebox.showinfo("Éxito", f"Stock actualizado a: {nuevo_total}")
+
+                e_cant_stock.delete(
+                    0,
+                    tk.END
+                )
+
+                messagebox.showinfo(
+                    "Éxito",
+                    (
+                        f"Stock actualizado a: "
+                        f"{nuevo_total}"
+                    )
+                )
+
             except ValueError as exc:
-                messagebox.showerror("Error", str(exc))
+
+                messagebox.showerror(
+                    "Error",
+                    str(exc)
+                )
+
             except Exception as exc:
-                messagebox.showerror("Error de stock", str(exc))
 
-        f_btns = ttk.Frame(f_stock)
-        f_btns.grid(row=1, column=0, columnspan=2, pady=8)
-        
-        tk.Button(f_btns, text="➕ Agregar", bg=self.SUCCESS, fg="white", relief="flat", padx=8, font=("Segoe UI", 8, "bold"), command=lambda: operacion_stock("agregar")).pack(side="left", padx=2)
-        tk.Button(f_btns, text="➖ Quitar", bg=self.DANGER, fg="white", relief="flat", padx=8, font=("Segoe UI", 8, "bold"), command=lambda: operacion_stock("eliminar")).pack(side="left", padx=2)
-        tk.Button(f_btns, text="✏️ Modificar", bg="#D97706", fg="white", relief="flat", padx=8, font=("Segoe UI", 8, "bold"), command=lambda: operacion_stock("modificar")).pack(side="left", padx=2)
+                messagebox.showerror(
+                    "Error de stock",
+                    str(exc)
+                )
 
-        def refresh_inventory(silencioso=False):
-            actualizar_etiquetas_combo(silencioso=silencioso)
-            actualizar_tabla(combo_filtro.get() or "Todas", silencioso=silencioso)
+        f_btns = ttk.Frame(
+            f_stock
+        )
 
-        self._refresh_inventory_view = refresh_inventory
+        f_btns.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            pady=8
+        )
+
+        tk.Button(
+            f_btns,
+            text="➕ Agregar",
+            bg=self.SUCCESS,
+            fg="white",
+            relief="flat",
+            padx=8,
+            font=("Segoe UI", 8, "bold"),
+            command=lambda:
+            operacion_stock(
+                "agregar"
+            )
+        ).pack(
+            side="left",
+            padx=2
+        )
+
+        tk.Button(
+            f_btns,
+            text="➖ Quitar",
+            bg=self.DANGER,
+            fg="white",
+            relief="flat",
+            padx=8,
+            font=("Segoe UI", 8, "bold"),
+            command=lambda:
+            operacion_stock(
+                "eliminar"
+            )
+        ).pack(
+            side="left",
+            padx=2
+        )
+
+        tk.Button(
+            f_btns,
+            text="✏️ Modificar",
+            bg=self.WARNING,
+            fg="white",
+            relief="flat",
+            padx=8,
+            font=("Segoe UI", 8, "bold"),
+            command=lambda:
+            operacion_stock(
+                "modificar"
+            )
+        ).pack(
+            side="left",
+            padx=2
+        )
+
+        # ------------------------------------------------------
+        # REFRESH
+        # ------------------------------------------------------
+
+        def refresh_inventory(
+            silencioso=False
+        ):
+
+            actualizar_etiquetas_combo(
+                silencioso=silencioso
+            )
+
+            actualizar_tabla(
+                combo_filtro.get()
+                or "Todas",
+                silencioso=silencioso
+            )
+
+        self._refresh_inventory_view = (
+            refresh_inventory
+        )
+
         actualizar_etiquetas_combo()
-        actualizar_tabla("Todas")
+        actualizar_tabla(
+            "Todas"
+        )
 
-    def construir_pestana_promociones(self, parent):
-        tk.Label(parent, text="Promociones", font=("Segoe UI", 16, "bold"), bg=self.BG_COLOR, fg=self.PRIMARY).pack(pady=10)
+    # ==========================================================
+    # PROMOCIONES
+    # ==========================================================
 
-        f_crear = ttk.LabelFrame(parent, text=" Crear Promoción ", padding=12)
-        f_crear.pack(fill="x", padx=16, pady=6)
-        
-        ttk.Label(f_crear, text="Nombre:").grid(row=0, column=0, sticky="w", pady=4)
-        e_nom_promo = ttk.Entry(f_crear, width=18)
-        e_nom_promo.grid(row=0, column=1, padx=6, pady=4)
-        
-        ttk.Label(f_crear, text="Código Artículo:").grid(row=0, column=2, sticky="w", pady=4)
-        e_cod_art = ttk.Entry(f_crear, width=15)
-        e_cod_art.grid(row=0, column=3, padx=6, pady=4)
-        
-        ttk.Label(f_crear, text="O Etiqueta:").grid(row=1, column=0, sticky="w", pady=4)
-        combo_eti_promo = ttk.Combobox(f_crear, state="readonly", width=15)
-        combo_eti_promo.grid(row=1, column=1, padx=6, pady=4)
-        
-        ttk.Label(f_crear, text="Tipo:").grid(row=1, column=2, sticky="w", pady=4)
-        e_tipo = ttk.Combobox(f_crear, values=["2X1", "PORCENTAJE"], state="readonly", width=12)
-        e_tipo.grid(row=1, column=3, padx=6, pady=4)
-        e_tipo.set("2X1")
-        
-        ttk.Label(f_crear, text="Valor (%):").grid(row=2, column=0, sticky="w", pady=4)
-        e_val = ttk.Entry(f_crear, width=15)
-        e_val.insert(0, "0")
-        e_val.grid(row=2, column=1, padx=6, pady=4)
+    def construir_pestana_promociones(
+        self,
+        parent
+    ):
 
-        columns_p = ("ID", "Nombre Promo", "Aplica A", "Tipo", "Valor")
-        tree_promo = ttk.Treeview(parent, columns=columns_p, show="headings", height=7)
+        tk.Label(
+            parent,
+            text="Promociones",
+            font=("Segoe UI", 16, "bold"),
+            bg=self.BG_COLOR,
+            fg=self.PRIMARY
+        ).pack(
+            pady=10
+        )
+
+        f_crear = ttk.LabelFrame(
+            parent,
+            text=" Crear Promoción ",
+            padding=12
+        )
+
+        f_crear.pack(
+            fill="x",
+            padx=16,
+            pady=6
+        )
+
+        ttk.Label(
+            f_crear,
+            text="Nombre:"
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        e_nom_promo = ttk.Entry(
+            f_crear,
+            width=18
+        )
+
+        e_nom_promo.grid(
+            row=0,
+            column=1,
+            padx=6,
+            pady=4
+        )
+
+        ttk.Label(
+            f_crear,
+            text="Código Artículo:"
+        ).grid(
+            row=0,
+            column=2,
+            sticky="w",
+            pady=4
+        )
+
+        e_cod_art = ttk.Entry(
+            f_crear,
+            width=15
+        )
+
+        e_cod_art.grid(
+            row=0,
+            column=3,
+            padx=6,
+            pady=4
+        )
+
+        ttk.Label(
+            f_crear,
+            text="O Etiqueta:"
+        ).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        combo_eti_promo = ttk.Combobox(
+            f_crear,
+            state="readonly",
+            width=15
+        )
+
+        combo_eti_promo.grid(
+            row=1,
+            column=1,
+            padx=6,
+            pady=4
+        )
+
+        ttk.Label(
+            f_crear,
+            text="Tipo:"
+        ).grid(
+            row=1,
+            column=2,
+            sticky="w",
+            pady=4
+        )
+
+        e_tipo = ttk.Combobox(
+            f_crear,
+            values=[
+                "2X1",
+                "PORCENTAJE"
+            ],
+            state="readonly",
+            width=12
+        )
+
+        e_tipo.grid(
+            row=1,
+            column=3,
+            padx=6,
+            pady=4
+        )
+
+        e_tipo.set(
+            "2X1"
+        )
+
+        ttk.Label(
+            f_crear,
+            text="Valor (%):"
+        ).grid(
+            row=2,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        e_val = ttk.Entry(
+            f_crear,
+            width=15
+        )
+
+        e_val.insert(
+            0,
+            "0"
+        )
+
+        e_val.grid(
+            row=2,
+            column=1,
+            padx=6,
+            pady=4
+        )
+
+        columns_p = (
+            "ID",
+            "Nombre Promo",
+            "Aplica A",
+            "Tipo",
+            "Valor"
+        )
+
+        tree_promo = ttk.Treeview(
+            parent,
+            columns=columns_p,
+            show="headings",
+            height=7
+        )
+
         for col in columns_p:
-            tree_promo.heading(col, text=col)
-            tree_promo.column(col, width=140, anchor="center")
-        tree_promo.pack(pady=6, padx=16, fill="x")
 
-        def cargar_promos(silencioso=False):
+            tree_promo.heading(
+                col,
+                text=col
+            )
+
+            tree_promo.column(
+                col,
+                width=140,
+                anchor="center"
+            )
+
+        tree_promo.pack(
+            pady=6,
+            padx=16,
+            fill="x"
+        )
+
+        def cargar_promos(
+            silencioso=False
+        ):
+
             try:
-                rows = InventarioRepository.obtener_promociones()
+
+                rows = (
+                    InventarioRepository
+                    .obtener_promociones()
+                )
+
                 for row in tree_promo.get_children():
-                    tree_promo.delete(row)
-                for row in rows:
-                    tree_promo.insert("", tk.END, values=row)
-            except Exception as exc:
-                if not silencioso:
-                    messagebox.showerror("Error", f"No se pudieron cargar las promociones: {exc}")
 
-        def actualizar_combos_promo(silencioso=False):
-            try:
-                valores = ["Ninguna"] + InventarioRepository.obtener_etiquetas()
-                combo_eti_promo["values"] = valores
-                if combo_eti_promo.get() not in valores:
-                    combo_eti_promo.set("Ninguna")
+                    tree_promo.delete(
+                        row
+                    )
+
+                for row in rows:
+
+                    tree_promo.insert(
+                        "",
+                        tk.END,
+                        values=row
+                    )
+
             except Exception as exc:
-                combo_eti_promo["values"] = ["Ninguna"]
-                combo_eti_promo.set("Ninguna")
+
                 if not silencioso:
-                    messagebox.showerror("Error", f"No se pudieron cargar las etiquetas: {exc}")
+
+                    messagebox.showerror(
+                        "Error",
+                        (
+                            "No se pudieron cargar "
+                            f"las promociones: {exc}"
+                        )
+                    )
+
+        def actualizar_combos_promo(
+            silencioso=False
+        ):
+
+            try:
+
+                valores = (
+                    ["Ninguna"] +
+                    InventarioRepository
+                    .obtener_etiquetas()
+                )
+
+                combo_eti_promo["values"] = (
+                    valores
+                )
+
+                if (
+                    combo_eti_promo.get()
+                    not in valores
+                ):
+
+                    combo_eti_promo.set(
+                        "Ninguna"
+                    )
+
+            except Exception as exc:
+
+                combo_eti_promo["values"] = [
+                    "Ninguna"
+                ]
+
+                combo_eti_promo.set(
+                    "Ninguna"
+                )
+
+                if not silencioso:
+
+                    messagebox.showerror(
+                        "Error",
+                        (
+                            "No se pudieron cargar "
+                            f"las etiquetas: {exc}"
+                        )
+                    )
 
         def registrar_promo():
-            try:
-                nombre = e_nom_promo.get().strip()
-                codigo = e_cod_art.get().strip()
-                etiqueta = combo_eti_promo.get()
-                tipo = e_tipo.get()
-                valor = float(e_val.get())
-                
-                val_codigo = codigo if codigo else None
-                val_etiqueta = etiqueta if etiqueta and etiqueta != "Ninguna" else None
 
-                InventarioRepository.guardar_promocion(nombre, tipo, valor, val_codigo, val_etiqueta)
-                messagebox.showinfo("Éxito", "Promoción creada correctamente.")
-                e_nom_promo.delete(0, tk.END)
-                e_cod_art.delete(0, tk.END)
-                combo_eti_promo.set("Ninguna")
+            try:
+
+                nombre = (
+                    e_nom_promo.get().strip()
+                )
+
+                codigo = (
+                    e_cod_art.get().strip()
+                )
+
+                etiqueta = (
+                    combo_eti_promo.get()
+                )
+
+                tipo = (
+                    e_tipo.get()
+                )
+
+                valor = float(
+                    e_val.get()
+                )
+
+                val_codigo = (
+                    codigo
+                    if codigo
+                    else None
+                )
+
+                val_etiqueta = (
+                    etiqueta
+                    if etiqueta
+                    and etiqueta != "Ninguna"
+                    else None
+                )
+
+                InventarioRepository.guardar_promocion(
+                    nombre,
+                    tipo,
+                    valor,
+                    val_codigo,
+                    val_etiqueta
+                )
+
+                messagebox.showinfo(
+                    "Éxito",
+                    (
+                        "Promoción creada "
+                        "correctamente."
+                    )
+                )
+
+                e_nom_promo.delete(
+                    0,
+                    tk.END
+                )
+
+                e_cod_art.delete(
+                    0,
+                    tk.END
+                )
+
+                combo_eti_promo.set(
+                    "Ninguna"
+                )
+
                 cargar_promos()
-            except (ValueError, TypeError) as exc:
-                messagebox.showerror("Error", str(exc))
+
+            except (
+                ValueError,
+                TypeError
+            ) as exc:
+
+                messagebox.showerror(
+                    "Error",
+                    str(exc)
+                )
+
             except Exception as exc:
-                messagebox.showerror("Error", str(exc))
+
+                messagebox.showerror(
+                    "Error",
+                    str(exc)
+                )
 
         tk.Button(
             f_crear,
@@ -572,20 +3377,55 @@ class MainWindow(tk.Tk):
             padx=12,
             font=("Segoe UI", 9, "bold"),
             command=registrar_promo,
-        ).grid(row=2, column=2, columnspan=2, pady=6)
+        ).grid(
+            row=2,
+            column=2,
+            columnspan=2,
+            pady=6
+        )
 
         def eliminar_promo_seleccionada():
+
             sel = tree_promo.selection()
+
             if not sel:
-                messagebox.showwarning("Aviso", "Seleccione una promoción para eliminar.")
+
+                messagebox.showwarning(
+                    "Aviso",
+                    (
+                        "Seleccione una promoción "
+                        "para eliminar."
+                    )
+                )
+
                 return
-            promo_id = int(tree_promo.item(sel[0], "values")[0])
-            if messagebox.askyesno("Confirmar", "¿Eliminar esta promoción?"):
+
+            promo_id = int(
+                tree_promo.item(
+                    sel[0],
+                    "values"
+                )[0]
+            )
+
+            if messagebox.askyesno(
+                "Confirmar",
+                "¿Eliminar esta promoción?"
+            ):
+
                 try:
-                    InventarioRepository.eliminar_promocion(promo_id)
+
+                    InventarioRepository.eliminar_promocion(
+                        promo_id
+                    )
+
                     cargar_promos()
+
                 except Exception as exc:
-                    messagebox.showerror("Error", str(exc))
+
+                    messagebox.showerror(
+                        "Error",
+                        str(exc)
+                    )
 
         tk.Button(
             parent,
@@ -597,45 +3437,169 @@ class MainWindow(tk.Tk):
             pady=6,
             font=("Segoe UI", 9, "bold"),
             command=eliminar_promo_seleccionada,
-        ).pack(pady=6)
-
-        self._refresh_promos_view = lambda silencioso=False: (
-            actualizar_combos_promo(silencioso), cargar_promos(silencioso)
+        ).pack(
+            pady=6
         )
+
+        self._refresh_promos_view = (
+            lambda silencioso=False:
+            (
+                actualizar_combos_promo(
+                    silencioso
+                ),
+                cargar_promos(
+                    silencioso
+                )
+            )
+        )
+
         actualizar_combos_promo()
         cargar_promos()
 
-    def construir_pestana_config(self, parent):
-        tk.Label(parent, text="Configuración Avanzada", font=("Segoe UI", 16, "bold"), bg=self.BG_COLOR, fg=self.PRIMARY).pack(pady=15)
-        f_form = ttk.LabelFrame(parent, text=" Parámetros Comerciales ", padding=20)
-        f_form.pack(padx=20, pady=10)
+    # ==========================================================
+    # CONFIGURACIÓN
+    # ==========================================================
+
+    def construir_pestana_config(
+        self,
+        parent
+    ):
+
+        tk.Label(
+            parent,
+            text="Configuración Avanzada",
+            font=("Segoe UI", 16, "bold"),
+            bg=self.BG_COLOR,
+            fg=self.PRIMARY
+        ).pack(
+            pady=15
+        )
+
+        f_form = ttk.LabelFrame(
+            parent,
+            text=" Parámetros Comerciales ",
+            padding=20
+        )
+
+        f_form.pack(
+            padx=20,
+            pady=10
+        )
 
         campos = [
-            ("Impuesto (%):", "IMPUESTOS_PCT"),
-            ("Comisión (%):", "COMISION_PCT"),
-            ("Logística Fija:", "LOGISTICA_FIJA"),
-            ("Margen de Ganancia (%):", "MARGEN_PCT"),
+            (
+                "Impuesto (%):",
+                "IMPUESTOS_PCT"
+            ),
+            (
+                "Comisión (%):",
+                "COMISION_PCT"
+            ),
+            (
+                "Logística Fija:",
+                "LOGISTICA_FIJA"
+            ),
+            (
+                "Margen de Ganancia (%):",
+                "MARGEN_PCT"
+            ),
         ]
+
         entries = {}
-        for row, (texto, atributo) in enumerate(campos):
-            ttk.Label(f_form, text=texto).grid(row=row, column=0, sticky="w", pady=6)
-            entry = ttk.Entry(f_form, width=18)
-            entry.insert(0, str(getattr(config, atributo, 0)))
-            entry.grid(row=row, column=1, padx=10, pady=6)
+
+        for row, (
+            texto,
+            atributo
+        ) in enumerate(campos):
+
+            ttk.Label(
+                f_form,
+                text=texto
+            ).grid(
+                row=row,
+                column=0,
+                sticky="w",
+                pady=6
+            )
+
+            entry = ttk.Entry(
+                f_form,
+                width=18
+            )
+
+            entry.insert(
+                0,
+                str(
+                    getattr(
+                        config,
+                        atributo,
+                        0
+                    )
+                )
+            )
+
+            entry.grid(
+                row=row,
+                column=1,
+                padx=10,
+                pady=6
+            )
+
             entries[atributo] = entry
 
         def guardar_config():
+
             try:
-                valores = {k: float(v.get()) for k, v in entries.items()}
-                if any(v < 0 for v in valores.values()):
-                    raise ValueError("Los parámetros no pueden ser negativos.")
+
+                valores = {
+                    k: float(v.get())
+                    for k, v in entries.items()
+                }
+
+                if any(
+                    v < 0
+                    for v in valores.values()
+                ):
+
+                    raise ValueError(
+                        (
+                            "Los parámetros "
+                            "no pueden ser negativos."
+                        )
+                    )
+
                 for atributo, valor in valores.items():
-                    setattr(config, atributo, valor)
-                messagebox.showinfo("Éxito", "Parámetros guardados correctamente.")
+
+                    setattr(
+                        config,
+                        atributo,
+                        valor
+                    )
+
+                messagebox.showinfo(
+                    "Éxito",
+                    (
+                        "Parámetros guardados "
+                        "correctamente."
+                    )
+                )
+
             except ValueError as exc:
-                messagebox.showerror("Error", str(exc))
+
+                messagebox.showerror(
+                    "Error",
+                    str(exc)
+                )
+
             except Exception as exc:
-                messagebox.showerror("Error", f"No se pudo guardar la configuración: {exc}")
+
+                messagebox.showerror(
+                    "Error",
+                    (
+                        "No se pudo guardar "
+                        f"la configuración: {exc}"
+                    )
+                )
 
         tk.Button(
             f_form,
@@ -646,152 +3610,712 @@ class MainWindow(tk.Tk):
             padx=14,
             pady=8,
             font=("Segoe UI", 9, "bold"),
-            command=guardar_config,
-        ).grid(row=4, column=0, columnspan=2, pady=15)
+            command=guardar_config
+        ).grid(
+            row=4,
+            column=0,
+            columnspan=2,
+            pady=15
+        )
 
-    def construir_pestana_etiquetas(self, parent):
-        tk.Label(parent, text="Gestión de Etiquetas", font=("Segoe UI", 16, "bold"), bg=self.BG_COLOR, fg=self.PRIMARY).pack(pady=10)
-        
-        f_form = ttk.LabelFrame(parent, text=" Nueva Etiqueta ", padding=15)
-        f_form.pack(padx=20, pady=6, fill="x")
-        ttk.Label(f_form, text="Nombre:").grid(row=0, column=0, sticky="w", pady=4)
-        e_eti = ttk.Entry(f_form, width=22)
-        e_eti.grid(row=0, column=1, padx=10, pady=4)
+    # ==========================================================
+    # ETIQUETAS
+    # ==========================================================
 
-        f_asig = ttk.LabelFrame(parent, text=" Vincular a Producto ", padding=15)
-        f_asig.pack(padx=20, pady=6, fill="x")
-        ttk.Label(f_asig, text="Código Producto:").grid(row=0, column=0, sticky="w")
-        e_cod_prod = ttk.Entry(f_asig, width=15)
-        e_cod_prod.grid(row=0, column=1, padx=8)
-        ttk.Label(f_asig, text="Etiqueta:").grid(row=0, column=2, sticky="w")
-        combo_asig_eti = ttk.Combobox(f_asig, state="readonly", width=15)
-        combo_asig_eti.grid(row=0, column=3, padx=8)
+    def construir_pestana_etiquetas(
+        self,
+        parent
+    ):
 
-        tree_eti = ttk.Treeview(parent, columns=("Etiqueta",), show="headings", height=6)
-        tree_eti.heading("Etiqueta", text="Nombre de Etiqueta")
-        tree_eti.pack(pady=6, padx=20, fill="x")
+        tk.Label(
+            parent,
+            text="Gestión de Etiquetas",
+            font=("Segoe UI", 16, "bold"),
+            bg=self.BG_COLOR,
+            fg=self.PRIMARY
+        ).pack(
+            pady=10
+        )
 
-        def cargar_lista_etiquetas(silencioso=False):
+        f_form = ttk.LabelFrame(
+            parent,
+            text=" Nueva Etiqueta ",
+            padding=15
+        )
+
+        f_form.pack(
+            padx=20,
+            pady=6,
+            fill="x"
+        )
+
+        ttk.Label(
+            f_form,
+            text="Nombre:"
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            pady=4
+        )
+
+        e_eti = ttk.Entry(
+            f_form,
+            width=22
+        )
+
+        e_eti.grid(
+            row=0,
+            column=1,
+            padx=10,
+            pady=4
+        )
+
+        f_asig = ttk.LabelFrame(
+            parent,
+            text=" Vincular a Producto ",
+            padding=15
+        )
+
+        f_asig.pack(
+            padx=20,
+            pady=6,
+            fill="x"
+        )
+
+        ttk.Label(
+            f_asig,
+            text="Código Producto:"
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w"
+        )
+
+        e_cod_prod = ttk.Entry(
+            f_asig,
+            width=15
+        )
+
+        e_cod_prod.grid(
+            row=0,
+            column=1,
+            padx=8
+        )
+
+        ttk.Label(
+            f_asig,
+            text="Etiqueta:"
+        ).grid(
+            row=0,
+            column=2,
+            sticky="w"
+        )
+
+        combo_asig_eti = ttk.Combobox(
+            f_asig,
+            state="readonly",
+            width=15
+        )
+
+        combo_asig_eti.grid(
+            row=0,
+            column=3,
+            padx=8
+        )
+
+        tree_eti = ttk.Treeview(
+            parent,
+            columns=("Etiqueta",),
+            show="headings",
+            height=6
+        )
+
+        tree_eti.heading(
+            "Etiqueta",
+            text="Nombre de Etiqueta"
+        )
+
+        tree_eti.pack(
+            pady=6,
+            padx=20,
+            fill="x"
+        )
+
+        def cargar_lista_etiquetas(
+            silencioso=False
+        ):
+
             try:
-                etiquetas = InventarioRepository.obtener_etiquetas()
-                combo_asig_eti["values"] = etiquetas
+
+                etiquetas = (
+                    InventarioRepository
+                    .obtener_etiquetas()
+                )
+
+                combo_asig_eti["values"] = (
+                    etiquetas
+                )
+
                 if etiquetas:
-                    combo_asig_eti.set(etiquetas[0])
+
+                    combo_asig_eti.set(
+                        etiquetas[0]
+                    )
+
                 else:
-                    combo_asig_eti.set("")
+
+                    combo_asig_eti.set(
+                        ""
+                    )
+
                 for row in tree_eti.get_children():
-                    tree_eti.delete(row)
+
+                    tree_eti.delete(
+                        row
+                    )
+
                 for eti in etiquetas:
-                    tree_eti.insert("", tk.END, values=(eti,))
+
+                    tree_eti.insert(
+                        "",
+                        tk.END,
+                        values=(eti,)
+                    )
+
             except Exception as exc:
+
                 if not silencioso:
-                    messagebox.showerror("Error", f"No se pudieron cargar las etiquetas: {exc}")
+
+                    messagebox.showerror(
+                        "Error",
+                        (
+                            "No se pudieron cargar "
+                            f"las etiquetas: {exc}"
+                        )
+                    )
 
         def crear_eti():
-            nombre = e_eti.get().strip()
+
+            nombre = (
+                e_eti.get().strip()
+            )
+
             if not nombre:
-                messagebox.showwarning("Aviso", "El nombre no puede estar vacío.")
+
+                messagebox.showwarning(
+                    "Aviso",
+                    (
+                        "El nombre no puede "
+                        "estar vacío."
+                    )
+                )
+
                 return
+
             try:
+
                 with DatabaseConnection.conectar() as conn:
-                    conn.execute("INSERT INTO etiquetas (nombre) VALUES (?)", (nombre,))
-                e_eti.delete(0, tk.END)
+
+                    conn.execute(
+                        """
+                        INSERT INTO etiquetas (
+                            nombre
+                        )
+                        VALUES (?)
+                        """,
+                        (
+                            nombre,
+                        )
+                    )
+
+                e_eti.delete(
+                    0,
+                    tk.END
+                )
+
                 cargar_lista_etiquetas()
-                if callable(self._refresh_inventory_view):
-                    self._refresh_inventory_view(silencioso=True)
-                if callable(self._refresh_promos_view):
-                    self._refresh_promos_view(silencioso=True)
-                messagebox.showinfo("Éxito", f"Etiqueta '{nombre}' creada correctamente.")
+
+                if callable(
+                    self._refresh_inventory_view
+                ):
+
+                    self._refresh_inventory_view(
+                        silencioso=True
+                    )
+
+                if callable(
+                    self._refresh_promos_view
+                ):
+
+                    self._refresh_promos_view(
+                        silencioso=True
+                    )
+
+                messagebox.showinfo(
+                    "Éxito",
+                    (
+                        f"Etiqueta '{nombre}' "
+                        "creada correctamente."
+                    )
+                )
+
             except Exception as exc:
-                messagebox.showerror("Error", f"No se pudo crear la etiqueta: {exc}")
+
+                messagebox.showerror(
+                    "Error",
+                    (
+                        "No se pudo crear "
+                        f"la etiqueta: {exc}"
+                    )
+                )
 
         def asociar_producto():
-            cod = e_cod_prod.get().strip()
-            eti = combo_asig_eti.get()
+
+            cod = (
+                e_cod_prod.get().strip()
+            )
+
+            eti = (
+                combo_asig_eti.get()
+            )
+
             if not cod or not eti:
-                messagebox.showwarning("Aviso", "Indique producto y etiqueta.")
+
+                messagebox.showwarning(
+                    "Aviso",
+                    (
+                        "Indique producto "
+                        "y etiqueta."
+                    )
+                )
+
                 return
+
             try:
-                InventarioRepository.asociar_etiqueta_a_producto(cod, eti)
-                e_cod_prod.delete(0, tk.END)
-                messagebox.showinfo("Éxito", f"Producto {cod} vinculado a '{eti}'.")
-                if callable(self._refresh_inventory_view):
-                    self._refresh_inventory_view(silencioso=True)
+
+                (
+                    InventarioRepository
+                    .asociar_etiqueta_a_producto(
+                        cod,
+                        eti
+                    )
+                )
+
+                e_cod_prod.delete(
+                    0,
+                    tk.END
+                )
+
+                messagebox.showinfo(
+                    "Éxito",
+                    (
+                        f"Producto {cod} "
+                        f"vinculado a '{eti}'."
+                    )
+                )
+
+                if callable(
+                    self._refresh_inventory_view
+                ):
+
+                    self._refresh_inventory_view(
+                        silencioso=True
+                    )
+
             except Exception as exc:
-                messagebox.showerror("Error", str(exc))
+
+                messagebox.showerror(
+                    "Error",
+                    str(exc)
+                )
 
         def eliminar_etiqueta():
-            sel = tree_eti.selection()
-            if not sel:
-                messagebox.showwarning("Aviso", "Seleccione una etiqueta.")
-                return
-            nombre = tree_eti.item(sel[0], "values")[0]
-            if not messagebox.askyesno("Confirmar", f"¿Eliminar la etiqueta '{nombre}'?"):
-                return
-            try:
-                with DatabaseConnection.conectar() as conn:
-                    conn.execute("DELETE FROM etiquetas WHERE nombre = ?", (nombre,))
-                cargar_lista_etiquetas()
-                if callable(self._refresh_inventory_view):
-                    self._refresh_inventory_view(silencioso=True)
-                if callable(self._refresh_promos_view):
-                    self._refresh_promos_view(silencioso=True)
-            except Exception as exc:
-                messagebox.showerror("Error", f"No se pudo eliminar la etiqueta: {exc}")
 
-        tk.Button(f_form, text="➕ Agregar Etiqueta", bg=self.SUCCESS, fg="white", relief="flat", padx=10, command=crear_eti).grid(row=0, column=2, padx=10)
-        tk.Button(f_asig, text="🔗 Vincular", bg=self.ACCENT, fg="white", relief="flat", padx=10, command=asociar_producto).grid(row=0, column=4, padx=10)
-        tk.Button(parent, text="🗑️ Eliminar Etiqueta Seleccionada", bg=self.DANGER, fg="white", relief="flat", padx=12, pady=6, command=eliminar_etiqueta).pack(pady=6)
+            sel = tree_eti.selection()
+
+            if not sel:
+
+                messagebox.showwarning(
+                    "Aviso",
+                    "Seleccione una etiqueta."
+                )
+
+                return
+
+            nombre = tree_eti.item(
+                sel[0],
+                "values"
+            )[0]
+
+            if not messagebox.askyesno(
+                "Confirmar",
+                (
+                    f"¿Eliminar la etiqueta "
+                    f"'{nombre}'?"
+                )
+            ):
+
+                return
+
+            try:
+
+                with DatabaseConnection.conectar() as conn:
+
+                    conn.execute(
+                        """
+                        DELETE FROM etiquetas
+                        WHERE nombre = ?
+                        """,
+                        (
+                            nombre,
+                        )
+                    )
+
+                cargar_lista_etiquetas()
+
+                if callable(
+                    self._refresh_inventory_view
+                ):
+
+                    self._refresh_inventory_view(
+                        silencioso=True
+                    )
+
+                if callable(
+                    self._refresh_promos_view
+                ):
+
+                    self._refresh_promos_view(
+                        silencioso=True
+                    )
+
+            except Exception as exc:
+
+                messagebox.showerror(
+                    "Error",
+                    (
+                        "No se pudo eliminar "
+                        f"la etiqueta: {exc}"
+                    )
+                )
+
+        tk.Button(
+            f_form,
+            text="➕ Agregar Etiqueta",
+            bg=self.SUCCESS,
+            fg="white",
+            relief="flat",
+            padx=10,
+            command=crear_eti
+        ).grid(
+            row=0,
+            column=2,
+            padx=10
+        )
+
+        tk.Button(
+            f_asig,
+            text="🔗 Vincular",
+            bg=self.ACCENT,
+            fg="white",
+            relief="flat",
+            padx=10,
+            command=asociar_producto
+        ).grid(
+            row=0,
+            column=4,
+            padx=10
+        )
+
+        tk.Button(
+            parent,
+            text="🗑️ Eliminar Etiqueta Seleccionada",
+            bg=self.DANGER,
+            fg="white",
+            relief="flat",
+            padx=12,
+            pady=6,
+            command=eliminar_etiqueta
+        ).pack(
+            pady=6
+        )
+
         cargar_lista_etiquetas()
 
-    def construir_pestana_faltantes(self, parent):
-        tk.Label(parent, text="Productos Faltantes (Stock Crítico)", font=("Segoe UI", 16, "bold"), bg=self.BG_COLOR, fg=self.PRIMARY).pack(pady=15)
-        columns = ("Código", "Nombre", "Cantidad", "Mínimo")
-        tree = ttk.Treeview(parent, columns=columns, show="headings", height=10)
+    # ==========================================================
+    # FALTANTES
+    # ==========================================================
+
+    def construir_pestana_faltantes(
+        self,
+        parent
+    ):
+
+        tk.Label(
+            parent,
+            text="Productos Faltantes (Stock Crítico)",
+            font=("Segoe UI", 16, "bold"),
+            bg=self.BG_COLOR,
+            fg=self.PRIMARY
+        ).pack(
+            pady=15
+        )
+
+        columns = (
+            "Código",
+            "Nombre",
+            "Cantidad",
+            "Mínimo"
+        )
+
+        tree = ttk.Treeview(
+            parent,
+            columns=columns,
+            show="headings",
+            height=10
+        )
+
         for col in columns:
-            tree.heading(col, text=col)
-            tree.column(col, width=140, anchor="center")
-        tree.pack(pady=6, padx=16, fill="x")
 
-        def cargar_faltantes(silencioso=False):
+            tree.heading(
+                col,
+                text=col
+            )
+
+            tree.column(
+                col,
+                width=140,
+                anchor="center"
+            )
+
+        tree.pack(
+            pady=6,
+            padx=16,
+            fill="x"
+        )
+
+        def cargar_faltantes(
+            silencioso=False
+        ):
+
             try:
-                for row in tree.get_children():
-                    tree.delete(row)
-                for art in InventarioRepository.obtener_faltantes():
-                    tree.insert("", tk.END, values=(art.codigo, art.nombre, art.cantidad, art.stock_minimo))
-            except Exception as exc:
-                if not silencioso:
-                    messagebox.showerror("Error", f"No se pudo cargar Faltantes: {exc}")
 
-        self._refresh_faltantes_view = cargar_faltantes
-        tk.Button(parent, text="🔄 Actualizar Lista", command=cargar_faltantes, bg=self.ACCENT, fg="white", relief="flat", padx=12, pady=6, font=("Segoe UI", 9, "bold")).pack(pady=10)
+                for row in tree.get_children():
+
+                    tree.delete(
+                        row
+                    )
+
+                for art in (
+                    InventarioRepository
+                    .obtener_faltantes()
+                ):
+
+                    tree.insert(
+                        "",
+                        tk.END,
+                        values=(
+                            art.codigo,
+                            art.nombre,
+                            art.cantidad,
+                            art.stock_minimo
+                        )
+                    )
+
+            except Exception as exc:
+
+                if not silencioso:
+
+                    messagebox.showerror(
+                        "Error",
+                        (
+                            "No se pudo cargar "
+                            f"Faltantes: {exc}"
+                        )
+                    )
+
+        self._refresh_faltantes_view = (
+            cargar_faltantes
+        )
+
+        tk.Button(
+            parent,
+            text="🔄 Actualizar Lista",
+            command=cargar_faltantes,
+            bg=self.ACCENT,
+            fg="white",
+            relief="flat",
+            padx=12,
+            pady=6,
+            font=("Segoe UI", 9, "bold")
+        ).pack(
+            pady=10
+        )
+
         cargar_faltantes()
 
-    def construir_pestana_chatbot(self, parent):
-        tk.Label(parent, text="Reportes y Exportaciones", font=("Segoe UI", 16, "bold"), bg=self.BG_COLOR, fg=self.PRIMARY).pack(pady=15)
-        f_opts = ttk.LabelFrame(parent, text=" Centro de Reportes ", padding=20)
-        f_opts.pack(padx=20, pady=10, fill="x")
+    # ==========================================================
+    # REPORTES
+    # ==========================================================
 
-        def exportar(formato, tipo_dato):
+    def construir_pestana_chatbot(
+        self,
+        parent
+    ):
+
+        tk.Label(
+            parent,
+            text="Reportes y Exportaciones",
+            font=("Segoe UI", 16, "bold"),
+            bg=self.BG_COLOR,
+            fg=self.PRIMARY
+        ).pack(
+            pady=15
+        )
+
+        f_opts = ttk.LabelFrame(
+            parent,
+            text=" Centro de Reportes ",
+            padding=20
+        )
+
+        f_opts.pack(
+            padx=20,
+            pady=10,
+            fill="x"
+        )
+
+        def exportar(
+            formato,
+            tipo_dato
+        ):
+
             try:
+
                 if tipo_dato == "stock":
-                    arts = InventarioRepository.obtener_todos()
-                    contenido = "REPORTE DE STOCK:\n" + "\n".join(
-                        f"- {a.nombre} (Stock: {a.cantidad})" for a in arts
+
+                    arts = (
+                        InventarioRepository
+                        .obtener_todos()
                     )
+
+                    contenido = (
+                        "REPORTE DE STOCK:\n"
+                        +
+                        "\n".join(
+                            (
+                                f"- {a.nombre} "
+                                f"(Stock: {a.cantidad})"
+                            )
+                            for a in arts
+                        )
+                    )
+
                 else:
-                    promos = InventarioRepository.obtener_promociones()
-                    contenido = "REPORTE DE PROMOCIONES:\n" + "\n".join(
-                        f"- {p[1]} | {p[2]} [Tipo: {p[3]}]" for p in promos
+
+                    promos = (
+                        InventarioRepository
+                        .obtener_promociones()
                     )
+
+                    contenido = (
+                        "REPORTE DE PROMOCIONES:\n"
+                        +
+                        "\n".join(
+                            (
+                                f"- {p[1]} | "
+                                f"{p[2]} "
+                                f"[Tipo: {p[3]}]"
+                            )
+                            for p in promos
+                        )
+                    )
+
                 messagebox.showinfo(
                     f"Exportar a {formato}",
-                    f"Archivo de {tipo_dato} preparado para {formato}.\n\n{contenido}",
+                    (
+                        f"Archivo de "
+                        f"{tipo_dato} preparado "
+                        f"para {formato}.\n\n"
+                        f"{contenido}"
+                    )
                 )
-            except Exception as exc:
-                messagebox.showerror("Error", f"No se pudo generar el reporte: {exc}")
 
-        tk.Button(f_opts, text="📦 Exportar Stock a PDF", bg=self.DANGER, fg="white", relief="flat", width=35, pady=6, command=lambda: exportar("PDF", "stock")).pack(pady=6)
-        tk.Button(f_opts, text="📦 Exportar Stock a Excel", bg=self.SUCCESS, fg="white", relief="flat", width=35, pady=6, command=lambda: exportar("Excel", "stock")).pack(pady=6)
-        tk.Button(f_opts, text="🏷️ Exportar Promociones a PDF", bg="#7C3AED", fg="white", relief="flat", width=35, pady=6, command=lambda: exportar("PDF", "promos")).pack(pady=6)
-        tk.Button(f_opts, text="🏷️ Exportar Promociones a Excel", bg=self.ACCENT, fg="white", relief="flat", width=35, pady=6, command=lambda: exportar("Excel", "promos")).pack(pady=6)
+            except Exception as exc:
+
+                messagebox.showerror(
+                    "Error",
+                    (
+                        "No se pudo generar "
+                        f"el reporte: {exc}"
+                    )
+                )
+
+        tk.Button(
+            f_opts,
+            text="📦 Exportar Stock a PDF",
+            bg=self.DANGER,
+            fg="white",
+            relief="flat",
+            width=35,
+            pady=6,
+            command=lambda:
+            exportar(
+                "PDF",
+                "stock"
+            )
+        ).pack(
+            pady=6
+        )
+
+        tk.Button(
+            f_opts,
+            text="📦 Exportar Stock a Excel",
+            bg=self.SUCCESS,
+            fg="white",
+            relief="flat",
+            width=35,
+            pady=6,
+            command=lambda:
+            exportar(
+                "Excel",
+                "stock"
+            )
+        ).pack(
+            pady=6
+        )
+
+        tk.Button(
+            f_opts,
+            text="🏷️ Exportar Promociones a PDF",
+            bg=self.PURPLE,
+            fg="white",
+            relief="flat",
+            width=35,
+            pady=6,
+            command=lambda:
+            exportar(
+                "PDF",
+                "promos"
+            )
+        ).pack(
+            pady=6
+        )
+
+        tk.Button(
+            f_opts,
+            text="🏷️ Exportar Promociones a Excel",
+            bg=self.ACCENT,
+            fg="white",
+            relief="flat",
+            width=35,
+            pady=6,
+            command=lambda:
+            exportar(
+                "Excel",
+                "promos"
+            )
+        ).pack(
+            pady=6
+        )

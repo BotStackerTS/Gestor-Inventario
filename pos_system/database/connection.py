@@ -61,10 +61,38 @@ class DatabaseConnection:
                         REFERENCES etiquetas(id) ON DELETE CASCADE
                 );
 
+                -- Sesión de caja: se abre con un fondo inicial y se cierra con arqueo.
+                CREATE TABLE IF NOT EXISTS caja_sesiones (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fondo_inicial REAL NOT NULL,
+                    fecha_apertura TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    fecha_cierre TIMESTAMP,
+                    usuario_apertura TEXT NOT NULL,
+                    usuario_cierre TEXT,
+                    estado TEXT NOT NULL DEFAULT 'ABIERTA'
+                        CHECK (estado IN ('ABIERTA', 'CERRADA')),
+                    observaciones TEXT
+                );
+
+                -- Detalle del arqueo de cierre: un renglón por medio de pago.
+                CREATE TABLE IF NOT EXISTS caja_arqueo_detalle (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    caja_sesion_id INTEGER NOT NULL,
+                    medio_pago TEXT NOT NULL,
+                    monto_sistema REAL NOT NULL DEFAULT 0,
+                    monto_contado REAL,
+                    diferencia REAL,
+                    FOREIGN KEY (caja_sesion_id)
+                        REFERENCES caja_sesiones(id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS ventas (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     total REAL NOT NULL,
-                    fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    caja_sesion_id INTEGER,
+                    FOREIGN KEY (caja_sesion_id)
+                        REFERENCES caja_sesiones(id) ON DELETE RESTRICT
                 );
 
                 CREATE TABLE IF NOT EXISTS detalle_venta (
@@ -77,6 +105,16 @@ class DatabaseConnection:
                         REFERENCES ventas(id) ON DELETE CASCADE,
                     FOREIGN KEY (codigo_articulo)
                         REFERENCES inventario(codigo)
+                );
+
+                -- Pagos mixtos: una venta puede tener 1..N renglones de pago.
+                CREATE TABLE IF NOT EXISTS venta_pagos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    venta_id INTEGER NOT NULL,
+                    medio_pago TEXT NOT NULL,
+                    monto REAL NOT NULL CHECK (monto > 0),
+                    FOREIGN KEY (venta_id)
+                        REFERENCES ventas(id) ON DELETE CASCADE
                 );
                 """
             )
@@ -113,6 +151,16 @@ class DatabaseConnection:
         if "stock_minimo" not in columnas_inventario:
             conn.execute(
                 "ALTER TABLE inventario ADD COLUMN stock_minimo INTEGER NOT NULL DEFAULT 5"
+            )
+
+        # Instalaciones existentes de "ventas" no tienen caja_sesion_id.
+        columnas_ventas = {
+            row[1] for row in conn.execute("PRAGMA table_info(ventas)").fetchall()
+        }
+        if "caja_sesion_id" not in columnas_ventas:
+            conn.execute(
+                "ALTER TABLE ventas ADD COLUMN caja_sesion_id INTEGER "
+                "REFERENCES caja_sesiones(id)"
             )
 
         try:
